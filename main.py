@@ -28,16 +28,16 @@ threading.Thread(target=run_health_check, daemon=True).start()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
-# --- 2. KHMER FONT SETUP ---
+# --- 2. KHMER FONT SETUP (REGULAR FONT) ---
 FONT_DIR = "fonts"
-FONT_PATH = os.path.join(FONT_DIR, "Battambang-Bold.ttf")
+FONT_PATH = os.path.join(FONT_DIR, "Battambang-Regular.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONT_DIR):
         os.makedirs(FONT_DIR)
     if not os.path.exists(FONT_PATH):
-        print("Downloading Khmer Bold Font...")
-        url = "https://github.com/google/fonts/raw/main/ofl/battambang/Battambang-Bold.ttf"
+        print("Downloading Khmer Regular Font...")
+        url = "https://github.com/google/fonts/raw/main/ofl/battambang/Battambang-Regular.ttf"
         res = requests.get(url)
         with open(FONT_PATH, "wb") as f:
             f.write(res.content)
@@ -45,7 +45,7 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# --- 3. HELPER: TEXT WRAPPER (MAX 2 LINES) ---
+# --- 3. HELPER: TEXT WRAPPER ---
 def wrap_text_max2(text, font, max_width, draw):
     words = text.split(' ')
     lines = []
@@ -68,7 +68,6 @@ def wrap_text_max2(text, font, max_width, draw):
     if current_line:
         lines.append(' '.join(current_line))
         
-    # បើកាត់ទៅលើស ២ ជួរ យកត្រឹម ២ ជួរហើយថែម ...
     if len(lines) > 2:
         lines = lines[:2]
         lines[1] = lines[1][:18] + "..." if len(lines[1]) > 18 else lines[1] + "..."
@@ -168,14 +167,15 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
 
     map_extra_h = 35 if (is_first_page and data["mapUrl"]) else 0
     cust_info_h = 130 if is_first_page else 0
-    totals_h = 220 if is_last_page else 60
+    # បន្ថែមកម្ពស់ផ្នែកខាងក្រោមសម្រាប់ Last Page កុំឱ្យដាច់ Grand Total
+    totals_h = 280 if is_last_page else 70
 
     height = int(240 + cust_info_h + map_extra_h + total_items_height + totals_h)
 
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    # Top Bar
+    # Top Accent Line
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
     # Header
@@ -191,7 +191,6 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
     draw.line([(35, 125), (815, 125)], fill="#cbd5e1", width=2)
 
     y = 145
-    # ព័ត៌មានអតិថិជនបង្ហាញតែលើ Page 1
     if is_first_page:
         draw.text((35, int(y)), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
         y += 35
@@ -237,7 +236,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         draw.line([(35, int(y)), (815, int(y))], fill="#f1f5f9", width=1)
         y += 10
 
-    # Summary Totals (បង្ហាញតែលើ Page ចុងក្រោយ)
+    # Summary Totals Section (រៀបចំឡើងវិញមិនឱ្យបាំងគ្នា)
     if is_last_page:
         y += 10
         draw.line([(35, int(y)), (815, int(y))], fill="#cbd5e1", width=2)
@@ -257,10 +256,11 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         khr_val = f"៛ {int(round(data['grandTotal'] * exchange_rate)):,}"
         draw.text((35, int(y)), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
         draw.text((795, int(y)), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
-        y += 32
+        y += 35
         draw.text((795, int(y)), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
+        y += 20
 
-    # Footer
+    # Footer (រំកិលមកខាងក្រោមបំផុត)
     draw.text((int(width / 2), int(height - 25)), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
@@ -282,7 +282,7 @@ def generate_invoice_images(data):
         paths.append(img_p)
     return paths
 
-# --- 5. BOT HANDLERS ---
+# --- 5. SEPARATED BOT HANDLERS ---
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
