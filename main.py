@@ -47,7 +47,7 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# --- 3. HELPER: SMART TEXT WRAPPER ---
+# --- 3. HELPER: TEXT WRAPPER ---
 def wrap_text(text, font, max_width, draw):
     words = text.split(' ')
     lines = []
@@ -140,21 +140,21 @@ def parse_order_text(text):
     }
 
 def render_invoice_image(data, exchange_rate=4045):
-    font_large = ImageFont.truetype(FONT_PATH, 32)
-    font_medium = ImageFont.truetype(FONT_PATH, 20)
+    font_large = ImageFont.truetype(FONT_PATH, 30)
+    font_medium = ImageFont.truetype(FONT_PATH, 19)
     font_normal = ImageFont.truetype(FONT_PATH, 17)
 
     width = 850
     temp_img = Image.new("RGB", (width, 100), "white")
     temp_draw = ImageDraw.Draw(temp_img)
 
-    # គណនាកម្ពស់ជួរដេកតាមប្រវែងអត្ថបទជាក់ស្តែង
+    # គណនាកម្ពស់អក្សរដែលត្រូវចុះបន្ទាត់
     total_items_height = 0
     item_wrapped_lines = []
     for item in data["items"]:
-        lines = wrap_text(item["name"], font_normal, 230, temp_draw)
+        lines = wrap_text(item["name"], font_normal, 240, temp_draw)
         item_wrapped_lines.append(lines)
-        row_h = max(len(lines) * 26, 36) + 15
+        row_h = max(len(lines) * 26, 36) + 16
         total_items_height += row_h
 
     map_extra_h = 35 if data["mapUrl"] else 0
@@ -163,7 +163,7 @@ def render_invoice_image(data, exchange_rate=4045):
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    # Top Accent Line
+    # Top Bar Line
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
     # Header
@@ -172,14 +172,14 @@ def render_invoice_image(data, exchange_rate=4045):
 
     inv_num = f"#INV-{random.randint(100000, 900000)}"
     now = datetime.now(zoneinfo.ZoneInfo("Asia/Phnom_Penh"))
-    date_str = now.strftime("%d/%m/%Y, %I:%M %p").lower()
+    date_str = now.strftime("%d/%m/%Y, %I:%M ") + now.strftime("%p").lower().replace("pm", "p.m.").replace("am", "a.m.")
 
     draw.text((750, 45), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
     draw.text((750, 85), f"Date: {date_str}", font=font_normal, fill="#000000", anchor="ra")
 
-    draw.line([(50, 125), (750, 125)], fill="#94a3b8", width=2)
+    draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=1.5)
 
-    # Customer Info Section
+    # Customer Information
     y = 145
     draw.text((50, y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
     y += 35
@@ -194,64 +194,63 @@ def render_invoice_image(data, exchange_rate=4045):
     else:
         y += 10
 
-    # Table Header (កំណត់ទីតាំង X ឱ្យមានគម្លាតច្បាស់លាស់)
-    draw.rectangle([(50, y), (750, y + 45)], fill="#e2e8f0")
+    # Table Header Frame (កែសម្រួល Position ឱ្យចំដូចរូបភាព)
+    draw.rectangle([(50, y), (750, y + 42)], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
-    draw.text((380, y + 10), "ទំហំ", font=font_medium, fill="#000000")
-    draw.text((460, y + 10), "ចំនួន", font=font_medium, fill="#000000")
-    draw.text((535, y + 10), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
-    draw.text((730, y + 10), "សរុប", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((375, y + 10), "ទំហំ", font=font_medium, fill="#000000")
+    draw.text((440, y + 10), "ចំនួន", font=font_medium, fill="#000000")
+    draw.text((515, y + 10), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
+    draw.text((720, y + 10), "សរុប", font=font_medium, fill="#000000", anchor="ra")
 
-    y += 55
+    y += 52
 
-    # Table Rows Display with Smart Wrapping
+    # Table Item Rows
     for idx, (item, name_lines) in enumerate(zip(data["items"], item_wrapped_lines), start=1):
-        row_h = max(len(name_lines) * 26, 36) + 15
+        row_h = max(len(name_lines) * 26, 36) + 16
         
-        # No.
         draw.text((65, y), str(idx), font=font_normal, fill="#000000")
 
-        # Item Name (Print line by line)
+        # ឈ្មោះទំនិញ ចុះបន្ទាត់ស្វ័យប្រវត្តិ
         line_y = y
         for line in name_lines:
             draw.text((120, line_y), line, font=font_normal, fill="#000000")
             line_y += 26
 
-        # Details
-        draw.text((380, y), item["size"], font=font_normal, fill="#000000")
-        draw.text((460, y), str(int(item["qty"])), font=font_normal, fill="#000000")
-        draw.text((535, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
-        draw.text((730, y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
+        # Column ទំហំ, ចំនួន, តម្លៃ
+        draw.text((375, y), item["size"], font=font_normal, fill="#000000")
+        draw.text((440, y), str(int(item["qty"])), font=font_normal, fill="#000000")
+        draw.text((515, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
+        draw.text((720, y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
 
         y += row_h
-        draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1)
-        y += 12
+        draw.line([(50, y), (750, y)], fill="#f1f5f9", width=1)
+        y += 10
 
-    # Totals Section
+    # Calculation Summary Line
     y += 10
-    draw.line([(50, y), (750, y)], fill="#64748b", width=2)
-    y += 20
+    draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
+    y += 25
 
     draw.text((50, y), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#0f172a")
-    draw.text((730, y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((720, y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
     y += 30
 
     draw.text((50, y), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#0f172a")
-    draw.text((730, y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((720, y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
     y += 35
 
-    draw.line([(50, y), (750, y)], fill="#64748b", width=2)
+    draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
     y += 25
 
     khr_val = f"៛ {int(round(data['grandTotal'] * exchange_rate)):,}"
     draw.text((50, y), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
-    draw.text((730, y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
-    y += 35
-    draw.text((730, y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((720, y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
+    y += 32
+    draw.text((720, y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
 
     # Footer
-    draw.text((width / 2, height - 30), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
+    draw.text((width / 2, height - 25), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
 
     output_path = f"Invoice_{int(datetime.now().timestamp())}.jpg"
     img.save(output_path, "JPEG", quality=95)
@@ -274,7 +273,6 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     user_id = message.from_user.id
 
-    # ក. ចាប់បង្កើត Invoice ប្រសិនបើជា Order Text
     if "Order" in text or "ព័ត៌មានអតិថិជន" in text or "ទំនិញ" in text:
         order_data = parse_order_text(text)
         if order_data and order_data["items"]:
@@ -305,7 +303,6 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 print(f"Error generating invoice: {e}")
 
-    # ខ. ចាប់លុប Link (ប្រសិនបើ Member ធម្មតាប៉ុង Link)
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ['administrator', 'creator']:
@@ -322,10 +319,7 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # លុបសារ System (Join/Leave/Group Photo Change...)
     app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
-
-    # ដំណើរការបង្កើត Invoice និងលុប Link
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_messages))
 
     print("Bot AgentOneday is running...")
