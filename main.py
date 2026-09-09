@@ -9,7 +9,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- 1. HEALTH CHECK SERVER FOR RENDER ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -28,6 +28,26 @@ threading.Thread(target=run_health_check, daemon=True).start()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
+# --- GLOBAL EXCHANGE RATE CONFIG ---
+CURRENT_EXCHANGE_RATE = 4045
+IS_AUTO_RATE = True
+
+def fetch_live_bank_rate():
+    global CURRENT_EXCHANGE_RATE
+    try:
+        res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
+        data = res.json()
+        if data and "rates" in data and "KHR" in data["rates"]:
+            live_rate = round(data["rates"]["KHR"])
+            CURRENT_EXCHANGE_RATE = live_rate
+            return live_rate
+    except Exception as e:
+        print(f"Error fetching live exchange rate: {e}")
+    return CURRENT_EXCHANGE_RATE
+
+# ទាញយក Live Rate ភ្លាមៗពេល Bot ដើរដំបូង
+fetch_live_bank_rate()
+
 # --- 2. KHMER FONT SETUP ---
 FONT_DIR = "fonts"
 FONT_PATH = os.path.join(FONT_DIR, "Battambang-Bold.ttf")
@@ -45,7 +65,7 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# --- 3. HELPER: TEXT WRAPPER (MAX 2 LINES) ---
+# --- 3. HELPER: TEXT WRAPPER ---
 def wrap_text_max2(text, font, max_width, draw):
     words = text.split(' ')
     lines = []
@@ -145,10 +165,11 @@ def parse_order_text(text):
         "grandTotal": grand_total
     }
 
-def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate=4045):
-    # បង្កើន Scale Factor x3.0 សម្រាប់កម្រិតរូបភាពច្បាស់ (Ultra High Resolution)
-    S = 3.0
+def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate=None):
+    if exchange_rate is None:
+        exchange_rate = CURRENT_EXCHANGE_RATE
 
+    S = 3.0
     font_large = ImageFont.truetype(FONT_PATH, int(30 * S))
     font_medium = ImageFont.truetype(FONT_PATH, int(20 * S))
     font_normal = ImageFont.truetype(FONT_PATH, int(18 * S))
@@ -240,7 +261,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#e2e8f0", width=int(1.5 * S))
         y += int(12 * S)
 
-    # Summary Totals Section
+    # Summary Totals
     if is_last_page:
         y += int(15 * S)
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
@@ -268,7 +289,6 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
     draw.text((int(width / 2), int(height - (30 * S))), "", font=font_medium, fill="#475569", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
-    # រក្សាទុករូបភាព Quality 100% និងកំណត់ DPI 300
     img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
     return output_path
 
@@ -287,7 +307,33 @@ def generate_invoice_images(data):
         paths.append(img_p)
     return paths
 
-# --- 5. SEPARATED BOT HANDLERS ---
+# --- 5. EXCHANGE RATE COMMAND HANDLERS ---
+async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_EXCHANGE_RATE, IS_AUTO_RATE
+    cmd_text = update.message.text.strip()
+    
+    # បើវាយ /RateBank
+    if cmd_text.lower() == "/ratebank":
+        IS_AUTO_RATE = True
+        new_rate = fetch_live_bank_rate()
+        await update.message.reply_text(f"🔄 បានបើក Auto Live Exchange Rate ពីធនាគារជោគជ័យ!\n📊 Rate បច្ចុប្បន្ន៖ 1 USD = {new_rate:,} KHR")
+        return
+
+    # បើវាយ /Rate ឬ /rate
+    if cmd_text.lower() == "/rate":
+        mode_str = "Auto ពីធនាគារ" if IS_AUTO_RATE else "Manual (កំណត់ដោយខ្លួនឯង)"
+        await update.message.reply_text(f"📊 Exchange Rate បច្ចុប្បន្ន៖ 1 USD = {CURRENT_EXCHANGE_RATE:,} KHR\n⚙️ ទម្រង់៖ {mode_str}")
+        return
+
+    # បើវាយ /Rate4100, /Rate4050 ...
+    match = re.match(r'^/Rate(\d+)$', cmd_text, re.IGNORECASE)
+    if match:
+        new_rate = int(match.group(1))
+        CURRENT_EXCHANGE_RATE = new_rate
+        IS_AUTO_RATE = False
+        await update.message.reply_text(f"✅ បានកំណត់ Exchange Rate ជោគជ័យ!\n📊 1 USD = {new_rate:,} KHR")
+
+# --- 6. SEPARATED BOT HANDLERS ---
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
@@ -301,6 +347,11 @@ async def generate_invoice_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
     text = message.text.strip()
+    
+    # រំលងប្រសិនបើជា Command
+    if text.startswith("/"):
+        return
+
     order_data = parse_order_text(text)
 
     if order_data and order_data["items"]:
@@ -318,7 +369,7 @@ async def generate_invoice_handler(update: Update, context: ContextTypes.DEFAULT
                 caption += f"🗺️ **ទីតាំង Map:** {order_data['mapUrl']}\n"
                 caption += f"🔗 **Google Maps:** https://www.google.com/maps?q={clean_coords}\n"
 
-            khr = int(round(order_data['grandTotal'] * 4045))
+            khr = int(round(order_data['grandTotal'] * CURRENT_EXCHANGE_RATE))
             caption += f"\n💰 **តម្លៃសរុប:** ${order_data['grandTotal']:.2f} (៛ {khr:,})"
 
             if len(img_paths) == 1:
@@ -349,7 +400,7 @@ async def filter_links_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     text = message.text.strip()
-    if any(k in text for k in ["Order", "ព័ត៌មានអតិថិជន", "ទំនិញ", "ឈ្មោះ:"]):
+    if text.startswith("/") or any(k in text for k in ["Order", "ព័ត៌មានអតិថិជន", "ទំនិញ", "ឈ្មោះ:"]):
         return
 
     try:
@@ -362,7 +413,7 @@ async def filter_links_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         print(f"Error checking link permissions: {e}")
 
-# --- 6. MAIN FUNCTION ---
+# --- 7. MAIN FUNCTION ---
 def main():
     if not TELEGRAM_TOKEN:
         print("Error: TELEGRAM_TOKEN not set.")
@@ -370,11 +421,19 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # System Status Update Handler
     app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
+
+    # Rate Command Handlers
+    app.add_handler(MessageHandler(filters.Regex(r'^(?i)/rate.*$'), set_rate_command), group=0)
+
+    # Invoice Generator Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_invoice_handler), group=1)
+
+    # Link Filter Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links_handler), group=2)
 
-    print("Bot AgentOneday is running...")
+    print("Bot AgentOneday is running with Exchange Rate Tool...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
