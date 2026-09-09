@@ -71,7 +71,7 @@ def wrap_text(text, font, max_width, draw):
         lines.append(' '.join(current_line))
     return lines if lines else [text]
 
-# --- 4. INVOICE PARSER & GENERATOR ---
+# --- 4. SMART PARSER FOR ORDER TEXT ---
 def parse_order_text(text):
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     shop_name = "ONEDAY CLOTHING"
@@ -83,31 +83,32 @@ def parse_order_text(text):
     delivery_fee = 0.0
 
     for i, line in enumerate(lines):
-        # ស្វែងរកឈ្មោះហាង
-        if "— Order" in line or "– Order" in line or "Order" in line:
-            clean_shop = line.split('—')[0].split('–')[0].replace('Order', '').strip()
-            clean_shop = re.sub(r'[\U00010000-\U0010ffff]', '', clean_shop).strip()
+        # ឈ្មោះហាង
+        if "Order" in line:
+            clean_shop = line.replace('🛍️', '').replace('Order', '').replace('—', '').replace('–', '').strip()
             if clean_shop:
                 shop_name = clean_shop
 
+        # ព័ត៌មានអតិថិជន
         if "ឈ្មោះ:" in line:
-            name = re.sub(r'^[•\-\*]\s*ឈ្មោះ:\s*', '', line).strip()
+            name = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*ឈ្មោះ:\s*', '', line).strip()
         if "លេខទូរស័ព្ទ:" in line:
-            phone = re.sub(r'^[•\-\*]\s*លេខទូរស័ព្ទ:\s*', '', line).strip()
+            phone = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*លេខទូរស័ព្ទ:\s*', '', line).strip()
         if "ទីតាំង:" in line or "អាសយដ្ឋាន:" in line:
-            address = re.sub(r'^[•\-\*]\s*(ទីតាំង|អាសយដ្ឋាន):\s*', '', line).strip()
+            address = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*(ទីតាំង|អាសយដ្ឋាន):\s*', '', line).strip()
         if "ទីតាំង Map:" in line or "Map:" in line:
             if "Link Google Maps:" not in line:
-                map_url = re.sub(r'^[•\-\*]\s*(ទីតាំង Map|Map):\s*', '', line).strip()
+                map_url = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*(ទីតាំង Map|Map):\s*', '', line).strip()
 
-        if "ដឹកជញ្ជូន" in line:
+        # ថ្លៃដឹកជញ្ជូន
+        if "ថ្លៃដឹកជញ្ជូន" in line or "ដឹកជញ្ជូន" in line:
             match = re.search(r'\$([\d\.]+)', line)
             if match:
                 delivery_fee = float(match.group(1))
 
-        # ចាប់យកបញ្ជីទំនិញ
+        # បញ្ជីទំនិញ
         item_match = re.match(r'^\d+\.\s+(.+)$', line)
-        if item_match and "សរុប" not in line:
+        if item_match and "សរុប" not in line and "តម្លៃ" not in line:
             item_name = item_match.group(1).strip()
             size = "គ្មាន"
             qty = 1.0
@@ -168,7 +169,7 @@ def render_invoice_image(data, exchange_rate=4045):
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    # Top Accent Bar
+    # Top Bar
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
     # Header
@@ -184,7 +185,7 @@ def render_invoice_image(data, exchange_rate=4045):
 
     draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=1.5)
 
-    # Customer Info
+    # Customer Information
     y = 145
     draw.text((50, y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
     y += 35
@@ -199,7 +200,7 @@ def render_invoice_image(data, exchange_rate=4045):
     else:
         y += 10
 
-    # Table Header
+    # Table Header Frame
     draw.rectangle([(50, y), (750, y + 42)], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
@@ -276,8 +277,8 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     user_id = message.from_user.id
 
-    # ក. ចាប់បង្កើត Invoice (ពិនិត្យពាក្យគន្លឹះ)
-    if "ព័ត៌មានអតិថិជន" in text or "ទំនិញ" in text or "Order" in text or "ឈ្មោះ:" in text:
+    # ក. ចាប់បង្កើត Invoice
+    if any(k in text for k in ["Order", "ព័ត៌មានអតិថិជន", "ទំនិញ", "ឈ្មោះ:"]):
         order_data = parse_order_text(text)
         if order_data and order_data["items"]:
             wait_msg = await message.reply_text("⏳ កំពុងបង្កើតរូបភាពវិក្កយបត្រ...")
@@ -309,7 +310,7 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await wait_msg.edit_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
                 return
 
-    # ខ. ចាប់លុប Link សម្រាប់សារធម្មតា
+    # ខ. ចាប់លុប Link (សម្រាប់សារធម្មតា)
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ['administrator', 'creator']:
