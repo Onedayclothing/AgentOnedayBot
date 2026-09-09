@@ -9,7 +9,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 # --- 1. HEALTH CHECK SERVER FOR RENDER ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -45,7 +45,6 @@ def fetch_live_bank_rate():
         print(f"Error fetching live exchange rate: {e}")
     return CURRENT_EXCHANGE_RATE
 
-# ទាញយក Live Rate ភ្លាមៗពេល Bot ដើរដំបូង
 fetch_live_bank_rate()
 
 # --- 2. KHMER FONT SETUP ---
@@ -165,10 +164,7 @@ def parse_order_text(text):
         "grandTotal": grand_total
     }
 
-def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate=None):
-    if exchange_rate is None:
-        exchange_rate = CURRENT_EXCHANGE_RATE
-
+def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate):
     S = 3.0
     font_large = ImageFont.truetype(FONT_PATH, int(30 * S))
     font_medium = ImageFont.truetype(FONT_PATH, int(20 * S))
@@ -261,7 +257,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#e2e8f0", width=int(1.5 * S))
         y += int(12 * S)
 
-    # Summary Totals
+    # Summary Totals (គណនាលុយរៀលតាម Exchange Rate បច្ចុប្បន្ន)
     if is_last_page:
         y += int(15 * S)
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
@@ -286,7 +282,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         y += int(30 * S)
 
     # Footer
-    draw.text((int(width / 2), int(height - (30 * S))), "", font=font_medium, fill="#475569", anchor="mm")
+    draw.text((int(width / 2), int(height - (30 * S))), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
     img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
@@ -303,7 +299,7 @@ def generate_invoice_images(data):
     paths = []
     for i in range(total_pages):
         page_items = data["items"][i * items_per_page : (i + 1) * items_per_page]
-        img_p = render_single_page(data, page_items, (i * items_per_page) + 1, i + 1, total_pages)
+        img_p = render_single_page(data, page_items, (i * items_per_page) + 1, i + 1, total_pages, CURRENT_EXCHANGE_RATE)
         paths.append(img_p)
     return paths
 
@@ -312,20 +308,17 @@ async def set_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CURRENT_EXCHANGE_RATE, IS_AUTO_RATE
     cmd_text = update.message.text.strip()
     
-    # បើវាយ /RateBank
     if cmd_text.lower() == "/ratebank":
         IS_AUTO_RATE = True
         new_rate = fetch_live_bank_rate()
         await update.message.reply_text(f"🔄 បានបើក Auto Live Exchange Rate ពីធនាគារជោគជ័យ!\n📊 Rate បច្ចុប្បន្ន៖ 1 USD = {new_rate:,} KHR")
         return
 
-    # បើវាយ /Rate ឬ /rate
     if cmd_text.lower() == "/rate":
         mode_str = "Auto ពីធនាគារ" if IS_AUTO_RATE else "Manual (កំណត់ដោយខ្លួនឯង)"
         await update.message.reply_text(f"📊 Exchange Rate បច្ចុប្បន្ន៖ 1 USD = {CURRENT_EXCHANGE_RATE:,} KHR\n⚙️ ទម្រង់៖ {mode_str}")
         return
 
-    # បើវាយ /Rate4100, /Rate4050 ...
     match = re.match(r'^/Rate(\d+)$', cmd_text, re.IGNORECASE)
     if match:
         new_rate = int(match.group(1))
@@ -347,8 +340,6 @@ async def generate_invoice_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
     text = message.text.strip()
-    
-    # រំលងប្រសិនបើជា Command
     if text.startswith("/"):
         return
 
@@ -421,16 +412,9 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # System Status Update Handler
     app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
-
-    # Rate Command Handlers
     app.add_handler(MessageHandler(filters.Regex(r'^(?i)/rate.*$'), set_rate_command), group=0)
-
-    # Invoice Generator Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_invoice_handler), group=1)
-
-    # Link Filter Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links_handler), group=2)
 
     print("Bot AgentOneday is running with Exchange Rate Tool...")
