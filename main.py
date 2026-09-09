@@ -1,74 +1,77 @@
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+import os
+import re
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# Setup Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Health Check Server
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Group Guard Bot is Active!")
 
-TOKEN = "8908882439:AAFjeZ3k-30d4qxHH-AbCvol_cjDypTPXyQ"
-GROUP_CHAT_ID = "-1005447296235"  # Group Order របស់អ្នក
+def run_health_check():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
 
-async def handle_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+threading.Thread(target=run_health_check, daemon=True).start()
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+
+# Regex សម្រាប់ចាប់ Link គ្រប់ប្រភេទ
+URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
+
+# ១. លុបសារ System (ពេល Join ឬ Leave Group)
+async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if update.message:
+            # លុបបើមាន Member Join ឬ Leave
+            if update.message.new_chat_members or update.message.left_chat_member:
+                await update.message.delete()
+    except Exception as e:
+        print(f"Error deleting system message: {e}")
+
+# ២. លុប Link របស់ Member ធម្មតា
+async def filter_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message or not message.text:
         return
 
-    user_text = update.message.text
+    chat_id = message.chat_id
+    user_id = message.from_user.id
 
-    # ចាប់យកតែសារណាដែលមានពាក្យ "Oneday Clothing"
-    if "Oneday Clothing" in user_text:
-        customer = update.message.from_user
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
         
-        # រៀបចំ Username ឬ Direct Link ឆាតទៅកាន់អតិថិជន
-        if customer.username:
-            customer_username = f"@{customer.username}"
-            direct_chat_link = f"https://t.me/{customer.username}"
-        else:
-            customer_username = "គ្មាន Username"
-            direct_chat_link = f"tg://user?id={customer.id}"
+        # បើជា Administrator ឬ Creator (Owner) មិនបាច់លុបទេ
+        if member.status in ['administrator', 'creator']:
+            return
 
-        # រៀបចំសារសម្រាប់ Forward ចូល Group
-        group_message = (
-            f"🔔 **មានការកុម្មង់ទំនិញថ្មី!**\n\n"
-            f"{user_text}\n\n"
-            f"------------------------\n"
-            f"👤 **Telegram អតិថិជន**: {customer_username}\n"
-            f"🆔 **User ID**: `{customer.id}`"
-        )
+        # បើជា Member ធម្មតា ហើយមាន Link គឺលុបចោល
+        if re.search(URL_REGEX, message.text, re.IGNORECASE):
+            await message.delete()
 
-        # ប៊ូតុងចុចឆាតទៅកាន់អតិថិជនភ្លាមៗ
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💬 ឆាតទៅកាន់អតិថិជន", url=direct_chat_link)]
-        ])
-
-        try:
-            # ផ្ញើសារចូល Group Order
-            await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID,
-                text=group_message,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-            # ផ្ញើសារ Confirm ទៅអតិថិជនវិញ
-            await update.message.reply_text(
-                "✅ **អរគុណសម្រាប់ការកុម្មង់!**\n\n"
-                "ខាងហាង Oneday Clothing បានទទួលព័ត៌មានកុម្មង់របស់អ្នករួចរាល់ហើយ។ "
-                "ក្រុមការងារនឹងទំនាក់ទំនងទៅអ្នកក្នុងពេលឆាប់ៗនេះ!"
-            )
-        except Exception as e:
-            logging.error(f"Failed to send order message: {e}")
+    except Exception as e:
+        print(f"Error checking link/permissions: {e}")
 
 def main():
-    app = Application.builder().token(TOKEN).build()
-    
-    # ចាប់រាល់សារ Text ទាំងអស់ដែលផ្ញើចូល Bot
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_order))
+    if not TELEGRAM_TOKEN:
+        print("Error: TELEGRAM_TOKEN not set.")
+        return
 
-    print("Bot Oneday Clothing is running...")
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # លុបសារ Service Message (ទាំង Join និង Left)
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_system_message))
+
+    # ចាប់លុប Link
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links))
+
+    print("Bot is running...")
     app.run_polling(drop_pending_updates=True)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
