@@ -74,7 +74,7 @@ def wrap_text(text, font, max_width, draw):
 # --- 4. INVOICE PARSER & GENERATOR ---
 def parse_order_text(text):
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    shop_name = "Oneday Clothing"
+    shop_name = "ONEDAY CLOTHING"
     name = "អតិថិជន"
     phone = ""
     address = "ភ្នំពេញ"
@@ -83,8 +83,12 @@ def parse_order_text(text):
     delivery_fee = 0.0
 
     for i, line in enumerate(lines):
-        if "— Order" in line or "– Order" in line:
-            shop_name = re.sub(r'[\U00010000-\U0010ffff]', '', line.split('—')[0].split('–')[0]).strip()
+        # ស្វែងរកឈ្មោះហាង
+        if "— Order" in line or "– Order" in line or "Order" in line:
+            clean_shop = line.split('—')[0].split('–')[0].replace('Order', '').strip()
+            clean_shop = re.sub(r'[\U00010000-\U0010ffff]', '', clean_shop).strip()
+            if clean_shop:
+                shop_name = clean_shop
 
         if "ឈ្មោះ:" in line:
             name = re.sub(r'^[•\-\*]\s*ឈ្មោះ:\s*', '', line).strip()
@@ -93,13 +97,15 @@ def parse_order_text(text):
         if "ទីតាំង:" in line or "អាសយដ្ឋាន:" in line:
             address = re.sub(r'^[•\-\*]\s*(ទីតាំង|អាសយដ្ឋាន):\s*', '', line).strip()
         if "ទីតាំង Map:" in line or "Map:" in line:
-            map_url = re.sub(r'^[•\-\*]\s*(ទីតាំង Map|Map):\s*', '', line).strip()
+            if "Link Google Maps:" not in line:
+                map_url = re.sub(r'^[•\-\*]\s*(ទីតាំង Map|Map):\s*', '', line).strip()
 
         if "ដឹកជញ្ជូន" in line:
             match = re.search(r'\$([\d\.]+)', line)
             if match:
                 delivery_fee = float(match.group(1))
 
+        # ចាប់យកបញ្ជីទំនិញ
         item_match = re.match(r'^\d+\.\s+(.+)$', line)
         if item_match and "សរុប" not in line:
             item_name = item_match.group(1).strip()
@@ -162,8 +168,10 @@ def render_invoice_image(data, exchange_rate=4045):
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
+    # Top Accent Bar
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
+    # Header
     draw.text((50, 45), data["shopName"].upper(), font=font_large, fill="#000000")
     draw.text((50, 90), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#1e293b")
 
@@ -176,6 +184,7 @@ def render_invoice_image(data, exchange_rate=4045):
 
     draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=1.5)
 
+    # Customer Info
     y = 145
     draw.text((50, y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
     y += 35
@@ -190,6 +199,7 @@ def render_invoice_image(data, exchange_rate=4045):
     else:
         y += 10
 
+    # Table Header
     draw.rectangle([(50, y), (750, y + 42)], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
@@ -200,6 +210,7 @@ def render_invoice_image(data, exchange_rate=4045):
 
     y += 52
 
+    # Table Items
     for idx, (item, name_lines) in enumerate(zip(data["items"], item_wrapped_lines), start=1):
         row_h = max(len(name_lines) * 26, 36) + 16
         
@@ -219,6 +230,7 @@ def render_invoice_image(data, exchange_rate=4045):
         draw.line([(50, y), (750, y)], fill="#f1f5f9", width=1)
         y += 10
 
+    # Summary Totals
     y += 10
     draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
     y += 25
@@ -240,6 +252,7 @@ def render_invoice_image(data, exchange_rate=4045):
     y += 32
     draw.text((720, y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
 
+    # Footer
     draw.text((width / 2, height - 25), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
 
     output_path = f"Invoice_{int(datetime.now().timestamp())}.jpg"
@@ -263,8 +276,8 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     user_id = message.from_user.id
 
-    # ក. ចាប់បង្កើត Invoice
-    if "Order" in text or "ព័ត៌មានអតិថិជន" in text or "ទំនិញ" in text:
+    # ក. ចាប់បង្កើត Invoice (ពិនិត្យពាក្យគន្លឹះ)
+    if "ព័ត៌មានអតិថិជន" in text or "ទំនិញ" in text or "Order" in text or "ឈ្មោះ:" in text:
         order_data = parse_order_text(text)
         if order_data and order_data["items"]:
             wait_msg = await message.reply_text("⏳ កំពុងបង្កើតរូបភាពវិក្កយបត្រ...")
@@ -290,15 +303,13 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await wait_msg.delete()
                 if os.path.exists(img_path):
                     os.remove(img_path)
-                
-                # បញ្ចប់ការធ្វើការត្រឹមនេះ មិនឱ្យបន្តទៅស្កេនលុប Link ទៀតទេ!
-                return 
-
+                return
             except Exception as e:
                 print(f"Error generating invoice: {e}")
+                await wait_msg.edit_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
                 return
 
-    # ខ. ចាប់លុប Link (សម្រាប់សារធម្មតាដែលមិនមែនជា Order)
+    # ខ. ចាប់លុប Link សម្រាប់សារធម្មតា
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ['administrator', 'creator']:
