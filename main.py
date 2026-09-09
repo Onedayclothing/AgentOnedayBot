@@ -28,9 +28,7 @@ URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
-            # លុបបើមាន Member Join ឬ Leave
-            if update.message.new_chat_members or update.message.left_chat_member:
-                await update.message.delete()
+            await update.message.delete()
     except Exception as e:
         print(f"Error deleting system message: {e}")
 
@@ -64,8 +62,8 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # លុបសារ Service Message (ទាំង Join និង Left)
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_system_message))
+    # ប្រើ filters.StatusUpdate.ALL ដើម្បីចាប់រាល់សារ System (Join/Leave/Group Photo Change...)
+    app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
 
     # ចាប់លុប Link
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links))
