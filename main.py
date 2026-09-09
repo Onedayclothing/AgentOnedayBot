@@ -5,7 +5,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
-# Link Web App របស់អ្នក
 WEB_APP_URL = "https://onedayclothing.github.io"
 
 # Health Check Server
@@ -23,11 +22,9 @@ def run_health_check():
 threading.Thread(target=run_health_check, daemon=True).start()
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
-# Regex សម្រាប់ចាប់ Link គ្រប់ប្រភេទ
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
-# ០. មុខងារ /start ដើម្បីបង្ហាញប៊ូតុងបើក Mini App
+# ០. មុខងារ /start បង្ហាញប៊ូតុងបើក Mini App
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🛍️ បើកហាងទំនិញ / Shop Now", web_app=WebAppInfo(url=WEB_APP_URL))]
@@ -39,11 +36,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# ១. លុបសារ System (ពេល Join ឬ Leave Group)
+# ថែមមុខងារទទួល Order ស្វ័យប្រវត្តិពី Mini App
+async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_message and update.effective_message.web_app_data:
+        order_text = update.effective_message.web_app_data.data
+        
+        # ផ្ញើសារ Confirmation ទៅកាន់ Customer ភ្លាមៗ
+        await update.message.reply_text(
+            f"✅ **ការកុម្មង់ត្រូវបានបញ្ជូនជោគជ័យ!**\n\n{order_text}\n\nក្រុមការងារនឹងទាក់ទងទៅអ្នកក្នុងពេលឆាប់ៗនេះ។ សូមអរគុណ! 🙏",
+            parse_mode="Markdown"
+        )
+
+# ១. លុបសារ System (ពេល Join/Leave Group)
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
-            # លុបបើមាន Member Join ឬ Leave
             if update.message.new_chat_members or update.message.left_chat_member:
                 await update.message.delete()
     except Exception as e:
@@ -60,12 +67,9 @@ async def filter_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
-        
-        # បើជា Administrator ឬ Creator (Owner) មិនបាច់លុបទេ
         if member.status in ['administrator', 'creator']:
             return
 
-        # បើជា Member ធម្មតា ហើយមាន Link គឺលុបចោល
         if re.search(URL_REGEX, message.text, re.IGNORECASE):
             await message.delete()
 
@@ -79,13 +83,16 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # ថែម Handler សម្រាប់ /start Command
+    # ថែម Handler សម្រាប់ /start
     app.add_handler(CommandHandler("start", start_command))
+    
+    # ថែម Handler សម្រាប់ទទួល Order ពី Mini App (tg.sendData)
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_data))
 
-    # លុបសារ Service Message (ទាំង Join និង Left)
+    # លុបសារ System
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_system_message))
-
-    # ចាប់លុប Link
+    
+    # លុប Link
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links))
 
     print("Bot is running...")
