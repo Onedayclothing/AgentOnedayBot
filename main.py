@@ -148,7 +148,6 @@ def render_invoice_image(data, exchange_rate=4045):
     temp_img = Image.new("RGB", (width, 100), "white")
     temp_draw = ImageDraw.Draw(temp_img)
 
-    # គណនាកម្ពស់អក្សរដែលត្រូវចុះបន្ទាត់
     total_items_height = 0
     item_wrapped_lines = []
     for item in data["items"]:
@@ -163,10 +162,8 @@ def render_invoice_image(data, exchange_rate=4045):
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    # Top Bar Line
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
-    # Header
     draw.text((50, 45), data["shopName"].upper(), font=font_large, fill="#000000")
     draw.text((50, 90), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#1e293b")
 
@@ -179,7 +176,6 @@ def render_invoice_image(data, exchange_rate=4045):
 
     draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=1.5)
 
-    # Customer Information
     y = 145
     draw.text((50, y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
     y += 35
@@ -194,7 +190,6 @@ def render_invoice_image(data, exchange_rate=4045):
     else:
         y += 10
 
-    # Table Header Frame (កែសម្រួល Position ឱ្យចំដូចរូបភាព)
     draw.rectangle([(50, y), (750, y + 42)], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
@@ -205,19 +200,16 @@ def render_invoice_image(data, exchange_rate=4045):
 
     y += 52
 
-    # Table Item Rows
     for idx, (item, name_lines) in enumerate(zip(data["items"], item_wrapped_lines), start=1):
         row_h = max(len(name_lines) * 26, 36) + 16
         
         draw.text((65, y), str(idx), font=font_normal, fill="#000000")
 
-        # ឈ្មោះទំនិញ ចុះបន្ទាត់ស្វ័យប្រវត្តិ
         line_y = y
         for line in name_lines:
             draw.text((120, line_y), line, font=font_normal, fill="#000000")
             line_y += 26
 
-        # Column ទំហំ, ចំនួន, តម្លៃ
         draw.text((375, y), item["size"], font=font_normal, fill="#000000")
         draw.text((440, y), str(int(item["qty"])), font=font_normal, fill="#000000")
         draw.text((515, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
@@ -227,7 +219,6 @@ def render_invoice_image(data, exchange_rate=4045):
         draw.line([(50, y), (750, y)], fill="#f1f5f9", width=1)
         y += 10
 
-    # Calculation Summary Line
     y += 10
     draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
     y += 25
@@ -249,7 +240,6 @@ def render_invoice_image(data, exchange_rate=4045):
     y += 32
     draw.text((720, y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
 
-    # Footer
     draw.text((width / 2, height - 25), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
 
     output_path = f"Invoice_{int(datetime.now().timestamp())}.jpg"
@@ -273,6 +263,7 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     user_id = message.from_user.id
 
+    # ក. ចាប់បង្កើត Invoice
     if "Order" in text or "ព័ត៌មានអតិថិជន" in text or "ទំនិញ" in text:
         order_data = parse_order_text(text)
         if order_data and order_data["items"]:
@@ -299,10 +290,15 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await wait_msg.delete()
                 if os.path.exists(img_path):
                     os.remove(img_path)
-                return
+                
+                # បញ្ចប់ការធ្វើការត្រឹមនេះ មិនឱ្យបន្តទៅស្កេនលុប Link ទៀតទេ!
+                return 
+
             except Exception as e:
                 print(f"Error generating invoice: {e}")
+                return
 
+    # ខ. ចាប់លុប Link (សម្រាប់សារធម្មតាដែលមិនមែនជា Order)
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ['administrator', 'creator']:
