@@ -83,13 +83,11 @@ def parse_order_text(text):
     delivery_fee = 0.0
 
     for i, line in enumerate(lines):
-        # ឈ្មោះហាង
         if "Order" in line:
             clean_shop = line.replace('🛍️', '').replace('Order', '').replace('—', '').replace('–', '').strip()
             if clean_shop:
                 shop_name = clean_shop
 
-        # ព័ត៌មានអតិថិជន
         if "ឈ្មោះ:" in line:
             name = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*ឈ្មោះ:\s*', '', line).strip()
         if "លេខទូរស័ព្ទ:" in line:
@@ -100,13 +98,11 @@ def parse_order_text(text):
             if "Link Google Maps:" not in line:
                 map_url = re.sub(r'^[🛍️👤📦💰•\-\*]*\s*(ទីតាំង Map|Map):\s*', '', line).strip()
 
-        # ថ្លៃដឹកជញ្ជូន
         if "ថ្លៃដឹកជញ្ជូន" in line or "ដឹកជញ្ជូន" in line:
             match = re.search(r'\$([\d\.]+)', line)
             if match:
                 delivery_fee = float(match.group(1))
 
-        # បញ្ជីទំនិញ
         item_match = re.match(r'^\d+\.\s+(.+)$', line)
         if item_match and "សរុប" not in line and "តម្លៃ" not in line:
             item_name = item_match.group(1).strip()
@@ -164,7 +160,8 @@ def render_invoice_image(data, exchange_rate=4045):
         total_items_height += row_h
 
     map_extra_h = 35 if data["mapUrl"] else 0
-    height = 580 + total_items_height + map_extra_h
+    # កែប្រែប្រកាស height ជា int()
+    height = int(580 + total_items_height + map_extra_h)
 
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
@@ -183,7 +180,7 @@ def render_invoice_image(data, exchange_rate=4045):
     draw.text((750, 45), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
     draw.text((750, 85), f"Date: {date_str}", font=font_normal, fill="#000000", anchor="ra")
 
-    draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=1.5)
+    draw.line([(50, 125), (750, 125)], fill="#cbd5e1", width=2)
 
     # Customer Information
     y = 145
@@ -201,7 +198,7 @@ def render_invoice_image(data, exchange_rate=4045):
         y += 10
 
     # Table Header Frame
-    draw.rectangle([(50, y), (750, y + 42)], fill="#e2e8f0")
+    draw.rectangle([(50, int(y)), (750, int(y + 42))], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
     draw.text((375, y + 10), "ទំហំ", font=font_medium, fill="#000000")
@@ -211,50 +208,50 @@ def render_invoice_image(data, exchange_rate=4045):
 
     y += 52
 
-    # Table Items
+    # Table Item Rows
     for idx, (item, name_lines) in enumerate(zip(data["items"], item_wrapped_lines), start=1):
         row_h = max(len(name_lines) * 26, 36) + 16
         
-        draw.text((65, y), str(idx), font=font_normal, fill="#000000")
+        draw.text((65, int(y)), str(idx), font=font_normal, fill="#000000")
 
         line_y = y
         for line in name_lines:
-            draw.text((120, line_y), line, font=font_normal, fill="#000000")
+            draw.text((120, int(line_y)), line, font=font_normal, fill="#000000")
             line_y += 26
 
-        draw.text((375, y), item["size"], font=font_normal, fill="#000000")
-        draw.text((440, y), str(int(item["qty"])), font=font_normal, fill="#000000")
-        draw.text((515, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
-        draw.text((720, y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
+        draw.text((375, int(y)), item["size"], font=font_normal, fill="#000000")
+        draw.text((440, int(y)), str(int(item["qty"])), font=font_normal, fill="#000000")
+        draw.text((515, int(y)), f"${item['price']:.2f}", font=font_normal, fill="#000000")
+        draw.text((720, int(y)), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
 
         y += row_h
-        draw.line([(50, y), (750, y)], fill="#f1f5f9", width=1)
+        draw.line([(50, int(y)), (750, int(y))], fill="#f1f5f9", width=1)
         y += 10
 
-    # Summary Totals
+    # Calculation Summary Line
     y += 10
-    draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
+    draw.line([(50, int(y)), (750, int(y))], fill="#cbd5e1", width=2)
     y += 25
 
-    draw.text((50, y), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#0f172a")
-    draw.text((720, y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((50, int(y)), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#0f172a")
+    draw.text((720, int(y)), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
     y += 30
 
-    draw.text((50, y), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#0f172a")
-    draw.text((720, y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((50, int(y)), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#0f172a")
+    draw.text((720, int(y)), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
     y += 35
 
-    draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1.5)
+    draw.line([(50, int(y)), (750, int(y))], fill="#cbd5e1", width=2)
     y += 25
 
     khr_val = f"៛ {int(round(data['grandTotal'] * exchange_rate)):,}"
-    draw.text((50, y), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
-    draw.text((720, y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
+    draw.text((50, int(y)), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
+    draw.text((720, int(y)), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
     y += 32
-    draw.text((720, y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
+    draw.text((720, int(y)), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
 
     # Footer
-    draw.text((width / 2, height - 25), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
+    draw.text((int(width / 2), int(height - 25)), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
 
     output_path = f"Invoice_{int(datetime.now().timestamp())}.jpg"
     img.save(output_path, "JPEG", quality=95)
@@ -277,7 +274,6 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     user_id = message.from_user.id
 
-    # ក. ចាប់បង្កើត Invoice
     if any(k in text for k in ["Order", "ព័ត៌មានអតិថិជន", "ទំនិញ", "ឈ្មោះ:"]):
         order_data = parse_order_text(text)
         if order_data and order_data["items"]:
@@ -310,7 +306,6 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await wait_msg.edit_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
                 return
 
-    # ខ. ចាប់លុប Link (សម្រាប់សារធម្មតា)
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         if member.status not in ['administrator', 'creator']:
