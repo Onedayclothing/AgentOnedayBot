@@ -47,7 +47,31 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# --- 3. INVOICE PARSER & GENERATOR ---
+# --- 3. HELPER: SMART TEXT WRAPPER ---
+def wrap_text(text, font, max_width, draw):
+    words = text.split(' ')
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        line_width = bbox[2] - bbox[0]
+        
+        if line_width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                lines.append(word)
+                current_line = []
+    if current_line:
+        lines.append(' '.join(current_line))
+    return lines if lines else [text]
+
+# --- 4. INVOICE PARSER & GENERATOR ---
 def parse_order_text(text):
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     shop_name = "Oneday Clothing"
@@ -118,16 +142,28 @@ def parse_order_text(text):
 def render_invoice_image(data, exchange_rate=4045):
     font_large = ImageFont.truetype(FONT_PATH, 32)
     font_medium = ImageFont.truetype(FONT_PATH, 20)
-    font_normal = ImageFont.truetype(FONT_PATH, 18)
+    font_normal = ImageFont.truetype(FONT_PATH, 17)
 
     width = 850
-    items_count = len(data["items"])
-    height = 650 + (items_count * 55)
+    temp_img = Image.new("RGB", (width, 100), "white")
+    temp_draw = ImageDraw.Draw(temp_img)
+
+    # គណនាកម្ពស់ជួរដេកតាមប្រវែងអត្ថបទជាក់ស្តែង
+    total_items_height = 0
+    item_wrapped_lines = []
+    for item in data["items"]:
+        lines = wrap_text(item["name"], font_normal, 230, temp_draw)
+        item_wrapped_lines.append(lines)
+        row_h = max(len(lines) * 26, 36) + 15
+        total_items_height += row_h
+
+    map_extra_h = 35 if data["mapUrl"] else 0
+    height = 580 + total_items_height + map_extra_h
 
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
-    # Top Bar
+    # Top Accent Line
     draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
 
     # Header
@@ -143,7 +179,7 @@ def render_invoice_image(data, exchange_rate=4045):
 
     draw.line([(50, 125), (750, 125)], fill="#94a3b8", width=2)
 
-    # Customer Info
+    # Customer Info Section
     y = 145
     draw.text((50, y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
     y += 35
@@ -158,28 +194,39 @@ def render_invoice_image(data, exchange_rate=4045):
     else:
         y += 10
 
-    # Table Header
+    # Table Header (កំណត់ទីតាំង X ឱ្យមានគម្លាតច្បាស់លាស់)
     draw.rectangle([(50, y), (750, y + 45)], fill="#e2e8f0")
     draw.text((65, y + 10), "No.", font=font_medium, fill="#000000")
     draw.text((120, y + 10), "ទំនិញ / Details", font=font_medium, fill="#000000")
-    draw.text((370, y + 10), "ទំហំ", font=font_medium, fill="#000000")
-    draw.text((450, y + 10), "ចំនួន", font=font_medium, fill="#000000")
-    draw.text((530, y + 10), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
+    draw.text((380, y + 10), "ទំហំ", font=font_medium, fill="#000000")
+    draw.text((460, y + 10), "ចំនួន", font=font_medium, fill="#000000")
+    draw.text((535, y + 10), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
     draw.text((730, y + 10), "សរុប", font=font_medium, fill="#000000", anchor="ra")
 
     y += 55
-    # Table Rows
-    for idx, item in enumerate(data["items"], start=1):
+
+    # Table Rows Display with Smart Wrapping
+    for idx, (item, name_lines) in enumerate(zip(data["items"], item_wrapped_lines), start=1):
+        row_h = max(len(name_lines) * 26, 36) + 15
+        
+        # No.
         draw.text((65, y), str(idx), font=font_normal, fill="#000000")
-        draw.text((120, y), item["name"], font=font_normal, fill="#000000")
-        draw.text((370, y), item["size"], font=font_normal, fill="#000000")
-        draw.text((450, y), str(int(item["qty"])), font=font_normal, fill="#000000")
-        draw.text((530, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
+
+        # Item Name (Print line by line)
+        line_y = y
+        for line in name_lines:
+            draw.text((120, line_y), line, font=font_normal, fill="#000000")
+            line_y += 26
+
+        # Details
+        draw.text((380, y), item["size"], font=font_normal, fill="#000000")
+        draw.text((460, y), str(int(item["qty"])), font=font_normal, fill="#000000")
+        draw.text((535, y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
         draw.text((730, y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
 
-        y += 40
+        y += row_h
         draw.line([(50, y), (750, y)], fill="#cbd5e1", width=1)
-        y += 15
+        y += 12
 
     # Totals Section
     y += 10
@@ -210,7 +257,7 @@ def render_invoice_image(data, exchange_rate=4045):
     img.save(output_path, "JPEG", quality=95)
     return output_path
 
-# --- 4. BOT HANDLERS ---
+# --- 5. BOT HANDLERS ---
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
@@ -267,7 +314,7 @@ async def process_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error checking link permissions: {e}")
 
-# --- 5. MAIN FUNCTION ---
+# --- 6. MAIN FUNCTION ---
 def main():
     if not TELEGRAM_TOKEN:
         print("Error: TELEGRAM_TOKEN not set.")
