@@ -28,16 +28,16 @@ threading.Thread(target=run_health_check, daemon=True).start()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
-# --- 2. KHMER FONT SETUP (REGULAR FONT) ---
+# --- 2. KHMER FONT SETUP ---
 FONT_DIR = "fonts"
-FONT_PATH = os.path.join(FONT_DIR, "Battambang-Regular.ttf")
+FONT_PATH = os.path.join(FONT_DIR, "Battambang-Bold.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONT_DIR):
         os.makedirs(FONT_DIR)
     if not os.path.exists(FONT_PATH):
-        print("Downloading Khmer Regular Font...")
-        url = "https://github.com/google/fonts/raw/main/ofl/battambang/Battambang-Regular.ttf"
+        print("Downloading Khmer Bold Font...")
+        url = "https://github.com/google/fonts/raw/main/ofl/battambang/Battambang-Bold.ttf"
         res = requests.get(url)
         with open(FONT_PATH, "wb") as f:
             f.write(res.content)
@@ -45,7 +45,7 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# --- 3. HELPER: TEXT WRAPPER ---
+# --- 3. HELPER: TEXT WRAPPER (MAX 2 LINES) ---
 def wrap_text_max2(text, font, max_width, draw):
     words = text.split(' ')
     lines = []
@@ -146,125 +146,130 @@ def parse_order_text(text):
     }
 
 def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate=4045):
-    font_large = ImageFont.truetype(FONT_PATH, 30)
-    font_medium = ImageFont.truetype(FONT_PATH, 19)
-    font_normal = ImageFont.truetype(FONT_PATH, 17)
+    # បង្កើន Scale Factor x3.0 សម្រាប់កម្រិតរូបភាពច្បាស់ (Ultra High Resolution)
+    S = 3.0
 
-    width = 850
-    temp_img = Image.new("RGB", (width, 100), "white")
+    font_large = ImageFont.truetype(FONT_PATH, int(30 * S))
+    font_medium = ImageFont.truetype(FONT_PATH, int(20 * S))
+    font_normal = ImageFont.truetype(FONT_PATH, int(18 * S))
+
+    base_width = 850
+    width = int(base_width * S)
+    
+    temp_img = Image.new("RGB", (width, int(100 * S)), "white")
     temp_draw = ImageDraw.Draw(temp_img)
 
     total_items_height = 0
     item_wrapped_lines = []
     for item in page_items:
-        lines = wrap_text_max2(item["name"], font_normal, 260, temp_draw)
+        lines = wrap_text_max2(item["name"], font_normal, int(280 * S), temp_draw)
         item_wrapped_lines.append(lines)
-        row_h = max(len(lines) * 26, 36) + 14
+        row_h = max(len(lines) * int(30 * S), int(42 * S)) + int(20 * S)
         total_items_height += row_h
 
     is_first_page = (page_num == 1)
     is_last_page = (page_num == total_pages)
 
-    map_extra_h = 35 if (is_first_page and data["mapUrl"]) else 0
-    cust_info_h = 130 if is_first_page else 0
-    # បន្ថែមកម្ពស់ផ្នែកខាងក្រោមសម្រាប់ Last Page កុំឱ្យដាច់ Grand Total
-    totals_h = 280 if is_last_page else 70
+    map_extra_h = int(40 * S) if (is_first_page and data["mapUrl"]) else 0
+    cust_info_h = int(140 * S) if is_first_page else 0
+    totals_h = int(320 * S) if is_last_page else int(80 * S)
 
-    height = int(240 + cust_info_h + map_extra_h + total_items_height + totals_h)
+    height = int((240 * S) + cust_info_h + map_extra_h + total_items_height + totals_h)
 
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
     # Top Accent Line
-    draw.rectangle([(0, 0), (width, 14)], fill="#0284c7")
+    draw.rectangle([(0, 0), (width, int(16 * S))], fill="#0284c7")
 
     # Header
-    draw.text((35, 45), data["shopName"].upper(), font=font_large, fill="#000000")
-    draw.text((35, 90), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#1e293b")
+    draw.text((int(40 * S), int(45 * S)), data["shopName"].upper(), font=font_large, fill="#000000")
+    draw.text((int(40 * S), int(95 * S)), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#0f172a")
 
     page_str = f" (Page {page_num}/{total_pages})" if total_pages > 1 else ""
     inv_num = f"#INV-{data['inv_num']}{page_str}"
     
-    draw.text((815, 45), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
-    draw.text((815, 85), f"Date: {data['date_str']}", font=font_normal, fill="#000000", anchor="ra")
+    draw.text((int(810 * S), int(45 * S)), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
+    draw.text((int(810 * S), int(90 * S)), f"Date: {data['date_str']}", font=font_normal, fill="#000000", anchor="ra")
 
-    draw.line([(35, 125), (815, 125)], fill="#cbd5e1", width=2)
+    draw.line([(int(40 * S), int(135 * S)), (int(810 * S), int(135 * S))], fill="#64748b", width=int(2 * S))
 
-    y = 145
+    y = int(155 * S)
     if is_first_page:
-        draw.text((35, int(y)), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
-        y += 35
-        draw.text((35, int(y)), f"លេខទូរស័ព្ទ៖ {data['phone']}", font=font_medium, fill="#000000")
-        y += 35
-        draw.text((35, int(y)), f"អាសយដ្ឋាន៖ {data['address']}", font=font_medium, fill="#000000")
-        y += 35
+        draw.text((int(40 * S), y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
+        y += int(38 * S)
+        draw.text((int(40 * S), y), f"លេខទូរស័ព្ទ៖ {data['phone']}", font=font_medium, fill="#000000")
+        y += int(38 * S)
+        draw.text((int(40 * S), y), f"អាសយដ្ឋាន៖ {data['address']}", font=font_medium, fill="#000000")
+        y += int(38 * S)
 
         if data["mapUrl"]:
-            draw.text((35, int(y)), f"ទីតាំង Map៖ {data['mapUrl']}", font=font_medium, fill="#0284c7")
-            y += 40
+            draw.text((int(40 * S), y), f"ទីតាំង Map៖ {data['mapUrl']}", font=font_medium, fill="#0284c7")
+            y += int(45 * S)
         else:
-            y += 10
+            y += int(10 * S)
 
     # Table Header Frame
-    draw.rectangle([(35, int(y)), (815, int(y + 42))], fill="#e2e8f0")
-    draw.text((50, int(y + 10)), "No.", font=font_medium, fill="#000000")
-    draw.text((110, int(y + 10)), "ទំនិញ / Details", font=font_medium, fill="#000000")
-    draw.text((430, int(y + 10)), "ទំហំ", font=font_medium, fill="#000000")
-    draw.text((500, int(y + 10)), "ចំនួន", font=font_medium, fill="#000000")
-    draw.text((580, int(y + 10)), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
-    draw.text((795, int(y + 10)), "សរុប", font=font_medium, fill="#000000", anchor="ra")
+    draw.rectangle([(int(40 * S), y), (int(810 * S), y + int(46 * S))], fill="#e2e8f0")
+    draw.text((int(55 * S), y + int(10 * S)), "No.", font=font_medium, fill="#000000")
+    draw.text((int(115 * S), y + int(10 * S)), "ទំនិញ / Details", font=font_medium, fill="#000000")
+    draw.text((int(420 * S), y + int(10 * S)), "ទំហំ", font=font_medium, fill="#000000")
+    draw.text((int(490 * S), y + int(10 * S)), "ចំនួន", font=font_medium, fill="#000000")
+    draw.text((int(570 * S), y + int(10 * S)), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
+    draw.text((int(795 * S), y + int(10 * S)), "សរុប", font=font_medium, fill="#000000", anchor="ra")
 
-    y += 52
+    y += int(58 * S)
 
     # Table Items
     for idx, (item, name_lines) in enumerate(zip(page_items, item_wrapped_lines), start=start_idx):
-        row_h = max(len(name_lines) * 26, 36) + 14
+        row_h = max(len(name_lines) * int(30 * S), int(42 * S)) + int(20 * S)
         
-        draw.text((50, int(y)), str(idx), font=font_normal, fill="#000000")
+        draw.text((int(55 * S), y), str(idx), font=font_normal, fill="#000000")
 
         line_y = y
         for line in name_lines:
-            draw.text((110, int(line_y)), line, font=font_normal, fill="#000000")
-            line_y += 26
+            draw.text((int(115 * S), line_y), line, font=font_normal, fill="#000000")
+            line_y += int(30 * S)
 
-        draw.text((430, int(y)), item["size"], font=font_normal, fill="#000000")
-        draw.text((500, int(y)), str(int(item["qty"])), font=font_normal, fill="#000000")
-        draw.text((580, int(y)), f"${item['price']:.2f}", font=font_normal, fill="#000000")
-        draw.text((795, int(y)), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
+        draw.text((int(420 * S), y), item["size"], font=font_normal, fill="#000000")
+        draw.text((int(490 * S), y), str(int(item["qty"])), font=font_normal, fill="#000000")
+        draw.text((int(570 * S), y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
+        draw.text((int(795 * S), y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
 
         y += row_h
-        draw.line([(35, int(y)), (815, int(y))], fill="#f1f5f9", width=1)
-        y += 10
+        draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#e2e8f0", width=int(1.5 * S))
+        y += int(12 * S)
 
-    # Summary Totals Section (រៀបចំឡើងវិញមិនឱ្យបាំងគ្នា)
+    # Summary Totals Section
     if is_last_page:
-        y += 10
-        draw.line([(35, int(y)), (815, int(y))], fill="#cbd5e1", width=2)
-        y += 25
+        y += int(15 * S)
+        draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
+        y += int(30 * S)
 
-        draw.text((35, int(y)), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#0f172a")
-        draw.text((795, int(y)), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
-        y += 30
+        draw.text((int(40 * S), y), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#000000")
+        draw.text((int(795 * S), y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+        y += int(35 * S)
 
-        draw.text((35, int(y)), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#0f172a")
-        draw.text((795, int(y)), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
-        y += 35
+        draw.text((int(40 * S), y), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#000000")
+        draw.text((int(795 * S), y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+        y += int(40 * S)
 
-        draw.line([(35, int(y)), (815, int(y))], fill="#cbd5e1", width=2)
-        y += 25
+        draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
+        y += int(35 * S)
 
         khr_val = f"៛ {int(round(data['grandTotal'] * exchange_rate)):,}"
-        draw.text((35, int(y)), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
-        draw.text((795, int(y)), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
-        y += 35
-        draw.text((795, int(y)), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
-        y += 20
+        draw.text((int(40 * S), y), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
+        draw.text((int(795 * S), y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
+        y += int(40 * S)
+        draw.text((int(795 * S), y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
+        y += int(30 * S)
 
-    # Footer (រំកិលមកខាងក្រោមបំផុត)
-    draw.text((int(width / 2), int(height - 25)), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#64748b", anchor="mm")
+    # Footer
+    draw.text((int(width / 2), int(height - (30 * S))), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
-    img.save(output_path, "JPEG", quality=95)
+    # រក្សាទុករូបភាព Quality 100% និងកំណត់ DPI 300
+    img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
     return output_path
 
 def generate_invoice_images(data):
