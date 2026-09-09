@@ -1,102 +1,86 @@
-import os
-import re
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+        function openTelegram() {
+            if (Object.keys(cart).length === 0) {
+                alert(translations[currentLang].empty_cart);
+                return;
+            }
 
-WEB_APP_URL = "https://onedayclothing.github.io"
+            let nameInput = document.getElementById('custName');
+            let phoneInput = document.getElementById('custPhone');
+            let addressInput = document.getElementById('custAddress');
+            let mapUrlInput = document.getElementById('custMapUrl');
 
-# Health Check Server
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Group Guard Bot is Active!")
+            let name = nameInput.value.trim();
+            let phone = phoneInput.value.trim();
+            let address = addressInput.value.trim();
+            let mapUrl = mapUrlInput ? mapUrlInput.value.trim() : '';
 
-def run_health_check():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
+            let hasError = false;
+            if (!name) { nameInput.classList.add('error'); hasError = true; }
+            if (!phone) { phoneInput.classList.add('error'); hasError = true; }
+            if (!address) { addressInput.classList.add('error'); hasError = true; }
 
-threading.Thread(target=run_health_check, daemon=True).start()
+            if (hasError) {
+                alert(translations[currentLang].alert_fill);
+                return;
+            }
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
+            let cleanPhone = phone.replace(/[^0-9]/g, '');
+            if (cleanPhone.length < 8) {
+                phoneInput.classList.add('error');
+                alert(translations[currentLang].alert_phone_invalid);
+                return;
+            }
 
-# ០. មុខងារ /start បង្ហាញប៊ូតុងបើក Mini App
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🛍️ បើកហាងទំនិញ / Shop Now", web_app=WebAppInfo(url=WEB_APP_URL))]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "សូមស្វាគមន៍មកកាន់ Oneday Clothing! 🛍️\nចុចប៊ូតុងខាងក្រោមដើម្បីចូលមើល និងកុម្មង់ទំនិញ៖",
-        reply_markup=reply_markup
-    )
+            saveUserInfo();
 
-# ថែមមុខងារទទួល Order ស្វ័យប្រវត្តិពី Mini App
-async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_message and update.effective_message.web_app_data:
-        order_text = update.effective_message.web_app_data.data
-        
-        # ផ្ញើសារ Confirmation ទៅកាន់ Customer ភ្លាមៗ
-        await update.message.reply_text(
-            f"✅ **ការកុម្មង់ត្រូវបានបញ្ជូនជោគជ័យ!**\n\n{order_text}\n\nក្រុមការងារនឹងទាក់ទងទៅអ្នកក្នុងពេលឆាប់ៗនេះ។ សូមអរគុណ! 🙏",
-            parse_mode="Markdown"
-        )
+            let message = "🛍️ Oneday Clothing — Order\n\n";
+            message += "👤 ព័ត៌មានអតិថិជន\n";
+            message += `• ឈ្មោះ: ${name}\n`;
+            message += `• លេខទូរស័ព្ទ: ${phone}\n`;
+            message += `• អាសយដ្ឋាន: ${address}\n`;
+            if (mapUrl) {
+                let cleanCoords = mapUrl.replace(/\s+/g, '');
+                message += `• ទីតាំង Map: ${mapUrl}\n`;
+                message += `• Link Google Maps: https://www.google.com/maps?q=${cleanCoords}\n`;
+            }
+            message += "\n📦 ទំនិញ\n";
 
-# ១. លុបសារ System (ពេល Join/Leave Group)
-async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.message:
-            if update.message.new_chat_members or update.message.left_chat_member:
-                await update.message.delete()
-    except Exception as e:
-        print(f"Error deleting system message: {e}")
+            let index = 1;
+            let subtotalPrice = 0;
 
-# ២. លុប Link របស់ Member ធម្មតា
-async def filter_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.text:
-        return
+            const sizeOrder = { 'S': 1, 'M': 2, 'L': 3, 'XL': 4, 'XXL': 5 };
+            let sortedKeys = Object.keys(cart).sort((a, b) => {
+                let itemA = cart[a], itemB = cart[b];
+                let refA = parseInt(itemA.ref.replace(/\D/g, '')) || 0;
+                let refB = parseInt(itemB.ref.replace(/\D/g, '')) || 0;
+                if (refA !== refB) return refA - refB;
+                return (sizeOrder[itemA.size] || 99) - (sizeOrder[itemB.size] || 99);
+            });
 
-    chat_id = message.chat_id
-    user_id = message.from_user.id
+            for (let key of sortedKeys) {
+                let item = cart[key];
+                let itemTotal = item.price * item.qty;
+                subtotalPrice += itemTotal;
+                let localizedTitle = translations[currentLang][item.titleKey] || item.titleKey;
+                let refPart = item.ref ? `[${item.ref}] ` : '';
+                message += `${index}. ${refPart}${localizedTitle}\n`;
+                message += `    Size: ${item.size} × ${item.qty} — $${itemTotal.toFixed(2)}\n`;
+                index++;
+            }
 
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status in ['administrator', 'creator']:
-            return
+            let grandTotal = subtotalPrice + deliveryFee;
 
-        if re.search(URL_REGEX, message.text, re.IGNORECASE):
-            await message.delete()
+            message += `\n💰 សរុប\n`;
+            message += `• តម្លៃទំនិញ: $${subtotalPrice.toFixed(2)}\n`;
+            message += `• ថ្លៃដឹកជញ្ជូន: $${deliveryFee.toFixed(2)}\n`;
+            message += `• សរុបទាំងអស់: $${grandTotal.toFixed(2)}`;
 
-    except Exception as e:
-        print(f"Error checking link/permissions: {e}")
+            let targetUrl = `https://t.me/${TELEGRAM_USERNAME}?text=${encodeURIComponent(message)}`;
 
-def main():
-    if not TELEGRAM_TOKEN:
-        print("Error: TELEGRAM_TOKEN not set.")
-        return
-
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    # ថែម Handler សម្រាប់ /start
-    app.add_handler(CommandHandler("start", start_command))
-    
-    # ថែម Handler សម្រាប់ទទួល Order ពី Mini App (tg.sendData)
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_data))
-
-    # លុបសារ System
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_system_message))
-    
-    # លុប Link
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links))
-
-    print("Bot is running...")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == '__main__':
-    main()
+            // បើកតាម Telegram Native Link (គ្មាន Warning, ដើរគ្រប់ Mini App)
+            if (tg && tg.openTelegramLink) {
+                tg.openTelegramLink(targetUrl);
+            } else {
+                window.location.href = targetUrl;
+            }
+        }
