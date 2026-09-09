@@ -265,7 +265,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         y += int(30 * S)
 
     # Footer
-    draw.text((int(width / 2), int(height - (30 * S))), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
+    draw.text((int(width / 2), int(height - (30 * S))), "", font=font_medium, fill="#475569", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
     # រក្សាទុករូបភាព Quality 100% និងកំណត់ DPI 300
