@@ -2,8 +2,11 @@ import os
 import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+
+# Link Web App របស់អ្នក
+WEB_APP_URL = "https://onedayclothing.github.io"
 
 # Health Check Server
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -23,6 +26,18 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 # Regex សម្រាប់ចាប់ Link គ្រប់ប្រភេទ
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
+
+# ០. មុខងារ /start ដើម្បីបង្ហាញប៊ូតុងបើក Mini App
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🛍️ បើកហាងទំនិញ / Shop Now", web_app=WebAppInfo(url=WEB_APP_URL))]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "សូមស្វាគមន៍មកកាន់ Oneday Clothing! 🛍️\nចុចប៊ូតុងខាងក្រោមដើម្បីចូលមើល និងកុម្មង់ទំនិញ៖",
+        reply_markup=reply_markup
+    )
 
 # ១. លុបសារ System (ពេល Join ឬ Leave Group)
 async def delete_system_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,6 +78,9 @@ def main():
         return
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # ថែម Handler សម្រាប់ /start Command
+    app.add_handler(CommandHandler("start", start_command))
 
     # លុបសារ Service Message (ទាំង Join និង Left)
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, delete_system_message))
