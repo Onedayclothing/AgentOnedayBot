@@ -257,7 +257,7 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#e2e8f0", width=int(1.5 * S))
         y += int(12 * S)
 
-    # Summary Totals (គណនាលុយរៀលតាម Exchange Rate បច្ចុប្បន្ន)
+    # Summary Totals
     if is_last_page:
         y += int(15 * S)
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
@@ -413,7 +413,10 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
-    app.add_handler(MessageHandler(filters.Regex(r'^(?i)/rate.*$'), set_rate_command), group=0)
+    
+    # ប្រើ Regex ត្រឹមត្រូវសម្រាប់ Python 3.11+
+    app.add_handler(MessageHandler(filters.Regex(re.compile(r'^/rate.*$', re.IGNORECASE)), set_rate_command), group=0)
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_invoice_handler), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links_handler), group=2)
 
