@@ -1,6 +1,7 @@
 {
-  "name": "oneday-invoice-bot",
+  "name": "invoice-bot",
   "version": "1.0.0",
+  "description": "Telegram Invoice Generator Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -8,7 +9,10 @@
   "dependencies": {
     "canvas": "^2.11.2",
     "express": "^4.19.2",
-    "node-telegram-bot-api": "^0.66.0",
-    "pg": "^8.11.5"
+    "pg": "^8.11.5",
+    "telegraf": "^4.16.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
