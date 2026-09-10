@@ -2,24 +2,33 @@ import os
 import re
 import json
 import random
-import subprocess
+import urllib.request
 from datetime import datetime
 import pytz
 import psycopg2
 import requests
 from flask import Flask, render_template_string
 from threading import Thread
-from playwright.sync_api import sync_playwright
+from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Install Playwright Chromium Browser
-try:
-    subprocess.run(["playwright", "install", "chromium"], check=True)
-except Exception as e:
-    print("Playwright install log:", e)
+# --- 1. SETUP KHMER FONT ---
+FONTS_DIR = "fonts"
+FONT_PATH = os.path.join(FONTS_DIR, "NotoSansKhmer-Bold.ttf")
 
-# --- 1. ENV & DATABASE SETUP ---
+def setup_khmer_font():
+    if not os.path.exists(FONTS_DIR):
+        os.makedirs(FONTS_DIR, exist_ok=True)
+    if not os.path.exists(FONT_PATH):
+        print("Downloading Noto Sans Khmer Bold Font...")
+        url = "https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer-Bold.ttf"
+        urllib.request.urlretrieve(url, FONT_PATH)
+        print("Khmer Font downloaded successfully!")
+
+setup_khmer_font()
+
+# --- 2. ENV & DATABASE SETUP ---
 PORT = int(os.environ.get("PORT", 8080))
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
@@ -111,7 +120,7 @@ def fetch_live_exchange_rate():
     except Exception as e:
         print("Error fetching exchange rate:", e)
 
-# --- 2. FLASK SERVER ---
+# --- 3. FLASK SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -121,7 +130,7 @@ def home():
 def run_flask():
     app.run(host='0.0.0.0', port=PORT, use_reloader=False)
 
-# --- 3. ORDER PARSER ---
+# --- 4. ORDER PARSER ---
 def parse_order_text(text):
     try:
         lines = [l.strip() for l in text.split('\n') if l.strip()]
@@ -187,189 +196,143 @@ def parse_order_text(text):
         print("Parse Error:", e)
         return None
 
-# --- 4. HTML INVOICE TEMPLATE ---
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="km">
-<head>
-    <meta charset="UTF-8">
-    <link href="https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&display=swap" rel="stylesheet">
-    <style>
-        body {
-            font-family: 'Battambang', sans-serif;
-            width: 750px;
-            margin: 0 auto;
-            padding: 30px;
-            background: #ffffff;
-            color: #0f172a;
-            box-sizing: border-box;
-        }
-        .header-bar {
-            height: 10px;
-            background-color: #0284c7;
-            margin: -30px -30px 20px -30px;
-        }
-        .top-table {
-            width: 100%;
-            margin-bottom: 10px;
-        }
-        .shop-name {
-            font-size: 26px;
-            font-weight: bold;
-            color: #000;
-            text-transform: uppercase;
-        }
-        .sub-title {
-            font-size: 14px;
-            font-weight: bold;
-            color: #1e293b;
-        }
-        .inv-num {
-            font-size: 18px;
-            font-weight: bold;
-            color: #0284c7;
-            text-align: right;
-        }
-        .inv-date {
-            font-size: 13px;
-            font-weight: bold;
-            text-align: right;
-        }
-        hr {
-            border: 0;
-            border-top: 2px solid #94a3b8;
-            margin: 10px 0 15px 0;
-        }
-        .customer-info {
-            font-size: 15px;
-            font-weight: bold;
-            line-height: 1.8;
-            margin-bottom: 15px;
-        }
-        .map-url { color: #0284c7; }
-        .items-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .items-table th {
-            background-color: #e2e8f0;
-            color: #000;
-            font-size: 14px;
-            font-weight: bold;
-            padding: 8px;
-            text-align: left;
-        }
-        .items-table td {
-            padding: 10px 8px;
-            border-bottom: 1px solid #cbd5e1;
-            font-size: 14px;
-            font-weight: bold;
-        }
-        .text-center { text-align: center; }
-        .text-right { text-align: right; }
-        .summary-table {
-            width: 320px;
-            float: right;
-            margin-top: 15px;
-            font-size: 15px;
-            font-weight: bold;
-            line-height: 1.8;
-        }
-        .grand-total {
-            border-top: 2px solid #64748b;
-            font-size: 18px;
-            color: #0284c7;
-        }
-        .khr-val {
-            font-size: 16px;
-            color: #000;
-            text-align: right;
-        }
-        .footer {
-            clear: both;
-            text-align: center;
-            padding-top: 40px;
-            font-size: 14px;
-            font-weight: bold;
-            color: #475569;
-        }
-    </style>
-</head>
-<body>
-    <div class="header-bar"></div>
-    <table class="top-table">
-        <tr>
-            <td>
-                <div class="shop-name">{{ data['shopName'] }}</div>
-                <div class="sub-title">Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ</div>
-            </td>
-            <td style="vertical-align: top;">
-                <div class="inv-num">#INV-{{ data['invoiceNum'] }}</div>
-                <div class="inv-date">Date: {{ data['orderDate'] }}, {{ data['timeStr'] }}</div>
-            </td>
-        </tr>
-    </table>
-    <hr>
-    <div class="customer-info">
-        <div>ឈ្មោះអតិថិជន៖ {{ data['name'] }}</div>
-        <div>លេខទូរស័ព្ទ៖ {{ data['phone'] }}</div>
-        <div>អាសយដ្ឋាន៖ {{ data['address'] }}</div>
-        {% if data['mapUrl'] %}
-        <div class="map-url">ទីតាំង Map៖ {{ data['mapUrl'] }}</div>
-        {% endif %}
-    </div>
+# --- 5. CANVAS IMAGE GENERATOR ---
+def wrap_text(draw, text, font, max_width):
+    words = text.split(' ')
+    lines = []
+    current_line = words[0]
+    for word in words[1:]:
+        bbox = draw.textbbox((0, 0), current_line + " " + word, font=font)
+        if bbox[2] - bbox[0] < max_width:
+            current_line += " " + word
+        else:
+            lines.append(current_line)
+            current_line = word
+    lines.append(current_line)
+    return lines
 
-    <table class="items-table">
-        <thead>
-            <tr>
-                <th style="width: 6%;">No.</th>
-                <th style="width: 44%;">ទំនិញ / Details</th>
-                <th style="width: 12%;" class="text-center">ទំហំ</th>
-                <th style="width: 10%;" class="text-center">ចំនួន</th>
-                <th style="width: 14%;" class="text-right">តម្លៃ/ឯកតា</th>
-                <th style="width: 14%;" class="text-right">សរុប</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in data['items'] %}
-            <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ item['name'] }}</td>
-                <td class="text-center">{{ item['size'] }}</td>
-                <td class="text-center">{{ item['qty'] }}</td>
-                <td class="text-right">${{ "%.2f"|format(item['price']) }}</td>
-                <td class="text-right">${{ "%.2f"|format(item['total']) }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+def render_single_page(data, page_items, start_index, page_num, total_pages, exchange_rate):
+    scale = 3
+    base_width = 850
+    is_first_page = page_num == 1
+    is_last_page = page_num == total_pages
 
-    <table class="summary-table">
-        <tr>
-            <td>ថ្លៃទំនិញសរុប (Subtotal):</td>
-            <td class="text-right">${{ "%.2f"|format(data['subtotal']) }}</td>
-        </tr>
-        <tr>
-            <td>ថ្លៃដឹកជញ្ជូន (Delivery Fee):</td>
-            <td class="text-right">${{ "%.2f"|format(data['deliveryFee']) }}</td>
-        </tr>
-        <tr class="grand-total">
-            <td>តម្លៃសរុបចុងក្រោយ:</td>
-            <td class="text-right">${{ "%.2f"|format(data['grandTotal']) }}</td>
-        </tr>
-        <tr>
-            <td colspan="2" class="khr-val">({{ khr_text }})</td>
-        </tr>
-    </table>
+    font_bold_30 = ImageFont.truetype(FONT_PATH, 30 * scale)
+    font_bold_22 = ImageFont.truetype(FONT_PATH, 22 * scale)
+    font_bold_19 = ImageFont.truetype(FONT_PATH, 19 * scale)
+    font_bold_18 = ImageFont.truetype(FONT_PATH, 18 * scale)
+    font_bold_17 = ImageFont.truetype(FONT_PATH, 17 * scale)
+    font_bold_16 = ImageFont.truetype(FONT_PATH, 16 * scale)
+    font_bold_15 = ImageFont.truetype(FONT_PATH, 15 * scale)
 
-    <div class="footer">
-        សូមអរគុណសម្រាប់ការបញ្ជាទិញ!
-    </div>
-</body>
-</html>
-"""
+    dummy_img = Image.new("RGB", (1, 1))
+    dummy_draw = ImageDraw.Draw(dummy_img)
+
+    total_items_height = 0
+    for item in page_items:
+        wrapped = wrap_text(dummy_draw, item['name'], font_bold_16, 220 * scale)
+        total_items_height += max(len(wrapped) * 24, 38) + 16
+
+    has_map = bool(data['mapUrl'])
+    customer_extra_height = 30 if has_map else 0
+
+    if is_first_page:
+        base_height = (260 + total_items_height + 350 + customer_extra_height) if is_last_page else (200 + total_items_height + 200 + customer_extra_height)
+    else:
+        base_height = (180 + total_items_height + 350) if is_last_page else (120 + total_items_height + 150)
+
+    img = Image.new("RGB", (base_width * scale, base_height * scale), "#ffffff")
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle([0, 0, base_width * scale, 12 * scale], fill="#0284c7")
+
+    header_title = data['shopName'].upper() if data['shopName'] else "INVOICE"
+    draw.text((50 * scale, 40 * scale), header_title, font=font_bold_30, fill="#000000")
+    draw.text((50 * scale, 80 * scale), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_bold_15, fill="#1e293b")
+
+    page_str = f" (Page {page_num}/{total_pages})" if total_pages > 1 else ""
+    inv_num_str = f"#INV-{data['invoiceNum']}{page_str}"
+    draw.text((550 * scale, 40 * scale), inv_num_str, font=font_bold_18, fill="#0284c7")
+    draw.text((550 * scale, 75 * scale), f"Date: {data['orderDate']}, {data['timeStr']}", font=font_bold_15, fill="#000000")
+
+    draw.line([(50 * scale, 110 * scale), (750 * scale, 110 * scale)], fill="#94a3b8", width=2 * scale)
+
+    start_y = 125
+    if is_first_page:
+        draw.text((50 * scale, 130 * scale), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_bold_17, fill="#000000")
+        draw.text((50 * scale, 160 * scale), f"លេខទូរស័ព្ទ៖ {data['phone']}", font=font_bold_17, fill="#000000")
+        draw.text((50 * scale, 190 * scale), f"អាសយដ្ឋាន៖ {data['address']}", font=font_bold_17, fill="#000000")
+        if has_map:
+            draw.text((50 * scale, 220 * scale), f"ទីតាំង Map៖ {data['mapUrl']}", font=font_bold_17, fill="#0284c7")
+            start_y = 265
+        else:
+            start_y = 235
+
+    draw.rectangle([50 * scale, start_y * scale, 750 * scale, (start_y + 42) * scale], fill="#e2e8f0")
+    draw.text((65 * scale, (start_y + 8) * scale), "No.", font=font_bold_16, fill="#000000")
+    draw.text((120 * scale, (start_y + 8) * scale), "ទំនិញ / Details", font=font_bold_16, fill="#000000")
+    draw.text((370 * scale, (start_y + 8) * scale), "ទំហំ", font=font_bold_16, fill="#000000")
+    draw.text((440 * scale, (start_y + 8) * scale), "ចំនួន", font=font_bold_16, fill="#000000")
+    draw.text((515 * scale, (start_y + 8) * scale), "តម្លៃ/ឯកតា", font=font_bold_16, fill="#000000")
+    draw.text((670 * scale, (start_y + 8) * scale), "សរុប", font=font_bold_16, fill="#000000")
+
+    start_y += 47
+
+    for idx, item in enumerate(page_items):
+        wrapped_lines = wrap_text(draw, item['name'], font_bold_16, 230 * scale)
+        row_height = max(len(wrapped_lines) * 24, 38) + 16
+        text_center_y = start_y + (row_height / 2)
+
+        draw.text((65 * scale, (text_center_y - 10) * scale), str(start_index + idx + 1), font=font_bold_16, fill="#000000")
+        
+        start_text_y = text_center_y - (((len(wrapped_lines) - 1) * 24) / 2) - 10
+        for l_idx, line_txt in enumerate(wrapped_lines):
+            draw.text((120 * scale, (start_text_y + (l_idx * 24)) * scale), line_txt, font=font_bold_16, fill="#000000")
+
+        draw.text((370 * scale, (text_center_y - 10) * scale), item['size'], font=font_bold_16, fill="#000000")
+        draw.text((440 * scale, (text_center_y - 10) * scale), str(int(item['qty']) if item['qty'].is_integer() else item['qty']), font=font_bold_16, fill="#000000")
+        draw.text((515 * scale, (text_center_y - 10) * scale), f"${item['price']:.2f}", font=font_bold_16, fill="#000000")
+        draw.text((670 * scale, (text_center_y - 10) * scale), f"${item['total']:.2f}", font=font_bold_16, fill="#000000")
+
+        draw.line([(50 * scale, (start_y + row_height) * scale), (750 * scale, (start_y + row_height) * scale)], fill="#cbd5e1", width=1 * scale)
+        start_y += row_height
+
+    if is_last_page:
+        start_y += 10
+        draw.line([(50 * scale, start_y * scale), (750 * scale, start_y * scale)], fill="#64748b", width=2 * scale)
+
+        start_y += 20
+        draw.text((50 * scale, start_y * scale), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_bold_17, fill="#0f172a")
+        draw.text((650 * scale, start_y * scale), f"${data['subtotal']:.2f}", font=font_bold_17, fill="#0f172a")
+
+        start_y += 28
+        draw.text((50 * scale, start_y * scale), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_bold_17, fill="#0f172a")
+        draw.text((650 * scale, start_y * scale), f"${data['deliveryFee']:.2f}", font=font_bold_17, fill="#0f172a")
+
+        start_y += 32
+        draw.line([(50 * scale, start_y * scale), (750 * scale, start_y * scale)], fill="#64748b", width=2 * scale)
+
+        usd_val = f"${data['grandTotal']:.2f}"
+        khr_val = f"៛ {round(data['grandTotal'] * exchange_rate):,}"
+
+        start_y += 20
+        draw.text((50 * scale, start_y * scale), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_bold_19, fill="#000000")
+        draw.text((650 * scale, start_y * scale), usd_val, font=font_bold_22, fill="#0284c7")
+
+        start_y += 30
+        draw.text((650 * scale, start_y * scale), f"({khr_val})", font=font_bold_18, fill="#000000")
+
+    draw.text((320 * scale, (base_height - 30) * scale), "សូមអរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_bold_15, fill="#475569")
+
+    path_out = f"Invoice_{random.randint(1000, 9999)}.jpg"
+    img.save(path_out, "JPEG")
+    return path_out
 
 def generate_invoice_images(data, exchange_rate):
+    items_per_page = 10
+    total_pages = (len(data['items']) + items_per_page - 1) // items_per_page
+    file_paths = []
+
     invoice_num = random.randint(100000, 999999)
     tz = pytz.timezone('Asia/Phnom_Penh')
     now = datetime.now(tz)
@@ -378,25 +341,14 @@ def generate_invoice_images(data, exchange_rate):
 
     full_data = {**data, 'invoiceNum': invoice_num, 'orderDate': order_date, 'timeStr': time_str}
 
-    khr_val = int(round(data['grandTotal'] * exchange_rate))
-    khr_text = f"៛ {khr_val:,}"
+    for i in range(total_pages):
+        page_items = data['items'][i * items_per_page:(i + 1) * items_per_page]
+        img_path = render_single_page(full_data, page_items, i * items_per_page, i + 1, total_pages, exchange_rate)
+        file_paths.append(img_path)
 
-    with app.app_context():
-        rendered_html = render_template_string(HTML_TEMPLATE, data=full_data, khr_text=khr_text)
-    
-    file_path = f"Invoice_{random.randint(1000, 9999)}.jpg"
+    return file_paths
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-        page = browser.new_page(viewport={"width": 800, "height": 950})
-        page.set_content(rendered_html)
-        page.wait_for_load_state("networkidle")
-        page.screenshot(path=file_path, type="jpeg", full_page=True)
-        browser.close()
-
-    return [file_path]
-
-# --- 5. TELEGRAM BOT HANDLERS ---
+# --- 6. TELEGRAM BOT HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot ដំណើរការជោគជ័យ (Free ឥតគិតថ្លៃ)!\n\nគ្រាន់តែ Copy & Paste អត្ថបទ Order ចូលទីនេះ វានឹងចេញជារូបភាពវិក្កយបត្រស្អាតល្អជូនភ្លាមៗ!")
 
@@ -472,7 +424,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Error generating invoice:", e)
             await update.message.reply_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
 
-# --- 6. MAIN RUNNER ---
+# --- 7. MAIN RUNNER ---
 if __name__ == '__main__':
     init_db()
     fetch_live_exchange_rate()
