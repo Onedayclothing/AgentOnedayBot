@@ -8,6 +8,7 @@ import pytz
 import psycopg2
 import requests
 from flask import Flask, render_template_string
+from threading import Thread
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -434,7 +435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Error generating invoice:", e)
             await update.message.reply_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
 
-# --- 7. MAIN ENTRY POINT ---
+# --- 7. MAIN RUNNER ---
 if __name__ == '__main__':
     init_db()
     fetch_live_exchange_rate()
@@ -448,5 +449,4 @@ if __name__ == '__main__':
         app_bot.add_handler(CommandHandler("setrate", setrate_command))
         app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        # Run Bot Polling Direct
         app_bot.run_polling()
