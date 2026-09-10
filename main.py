@@ -13,20 +13,28 @@ from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- 1. SETUP KHMER FONT ---
+# --- 1. SETUP KHMER FONT (NOTO SANS KHMER - LINK ដើរ 100%) ---
 FONTS_DIR = "fonts"
-FONT_PATH = os.path.join(FONTS_DIR, "KantumruyPro-Bold.ttf")
+FONT_PATH = os.path.join(FONTS_DIR, "NotoSansKhmer-Bold.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONTS_DIR):
         os.makedirs(FONTS_DIR, exist_ok=True)
     if not os.path.exists(FONT_PATH):
-        print("Downloading Kantumruy Pro Bold Font...")
-        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/kantumruypro/KantumruyPro-Bold.ttf"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
-            out_file.write(response.read())
-        print("Khmer Font downloaded successfully!")
+        print("Downloading Noto Sans Khmer Bold Font...")
+        # Direct working link to Google Fonts Noto Sans Khmer
+        url = "https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer%5Bwdth%2Cwght%5D.ttf"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
+                out_file.write(response.read())
+            print("Noto Sans Khmer Font downloaded successfully!")
+        except Exception as e:
+            print("Failed to download Noto Sans Khmer, fallback to Battambang:", e)
+            fallback_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/battambang/Battambang-Bold.ttf"
+            req = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
+                out_file.write(response.read())
 
 setup_khmer_font()
 
