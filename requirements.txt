@@ -1,4 +1,6 @@
-python-telegram-bot>=20.0
+python-telegram-bot==20.7
 Pillow
+psycopg2-binary
 requests
-
+Flask
+gunicorn
