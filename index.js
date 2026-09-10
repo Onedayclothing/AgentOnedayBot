@@ -70,7 +70,8 @@ let memoryDB = {
   },
   allowedUsers: {},
   pendingRequests: {},
-  groupTitles: {}
+  groupTitles: {},     // { chatId: "Group/Channel Title" }
+  recentMsgIds: {}     // { chatId: [msgId1, msgId2, ...] }
 };
 
 if (fs.existsSync(dbFile)) {
@@ -80,6 +81,7 @@ if (fs.existsSync(dbFile)) {
     if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
     if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
     if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
+    if (!memoryDB.recentMsgIds) memoryDB.recentMsgIds = {};
   } catch (e) {
     console.error("Error reading dbFile:", e);
   }
@@ -101,6 +103,7 @@ async function initDB() {
         if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
         if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
         if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
+        if (!memoryDB.recentMsgIds) memoryDB.recentMsgIds = {};
         console.log("Database restored successfully from PostgreSQL!");
       } else {
         await pool.query(`INSERT INTO system_store (id, data) VALUES (1, $1);`, [JSON.stringify(memoryDB)]);
@@ -156,27 +159,25 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
+      { command: 'delete', description: 'លុបសារ (Photo, Video, Voice...) ក្នុង Group/Channel' },
+      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' },
       { command: 'rate', description: 'កំណត់អត្រាប្តូរប្រាក់ (Rate Buttons)' },
-      { command: 'delivery', description: 'កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Buttons)' },
-      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' }
+      { command: 'delivery', description: 'កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Buttons)' }
     ]);
   } catch (err) {
     console.error("Error setting commands menu:", err.message);
   }
 }
 
-// --- 4. RECORD JOIN REQUESTS & GROUP TITLES ---
+// --- 4. RECORD ALL MESSAGES, JOIN REQUESTS, AND TITLES ---
 bot.on('chat_join_request', async (ctx) => {
   try {
     const chatId = ctx.chatJoinRequest.chat.id.toString();
-    const chatTitle = ctx.chatJoinRequest.chat.title || "Group (មិនស្គាល់ឈ្មោះ)";
+    const chatTitle = ctx.chatJoinRequest.chat.title || "Group/Channel";
     const userId = ctx.chatJoinRequest.from.id;
 
     const db = getDatabase();
-    if (!db.pendingRequests[chatId]) {
-      db.pendingRequests[chatId] = [];
-    }
-
+    if (!db.pendingRequests[chatId]) db.pendingRequests[chatId] = [];
     db.groupTitles[chatId] = chatTitle;
 
     if (!db.pendingRequests[chatId].includes(userId)) {
@@ -188,7 +189,146 @@ bot.on('chat_join_request', async (ctx) => {
   }
 });
 
-// --- 5. /RATE BUTTON MENU ---
+// Record incoming messages and titles from groups/channels
+bot.use(async (ctx, next) => {
+  if (ctx.chat && (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup' || ctx.chat.type === 'channel')) {
+    const chatId = ctx.chat.id.toString();
+    const chatTitle = ctx.chat.title || "Group/Channel";
+    const db = getDatabase();
+
+    db.groupTitles[chatId] = chatTitle;
+
+    if (ctx.message && ctx.message.message_id) {
+      if (!db.recentMsgIds[chatId]) db.recentMsgIds[chatId] = [];
+      if (!db.recentMsgIds[chatId].includes(ctx.message.message_id)) {
+        db.recentMsgIds[chatId].push(ctx.message.message_id);
+        // រក្សាទុកត្រឹម ១,០០០ ផ្ទាំងសារចុងក្រោយ
+        if (db.recentMsgIds[chatId].length > 1000) {
+          db.recentMsgIds[chatId].shift();
+        }
+        await saveDatabase(db);
+      }
+    }
+  }
+  return next();
+});
+
+// --- 5. /DELETE COMMAND (SHOW GROUP/CHANNEL BUTTON LIST) ---
+bot.command('delete', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /delete នេះទេ!");
+  }
+
+  const db = getDatabase();
+  const knownChats = Object.keys(db.groupTitles);
+
+  if (knownChats.length === 0) {
+    return ctx.reply("ℹ️ បច្ចុប្បន្នមិនទាន់មាន Group ឬ Channel ណាដែលស្គាល់ក្នុងប្រព័ន្ធឡើយ!");
+  }
+
+  const buttons = knownChats.map((chatId) => {
+    const title = db.groupTitles[chatId] || `Chat ${chatId}`;
+    return [Markup.button.callback(`🗑️ ${title}`, `confirm_delete:${chatId}`)];
+  });
+
+  return ctx.reply("👇 សូមជ្រើសរើស Group ឬ Channel ដែលអ្នកចង់លុបសារទាំងអស់ (Photos, Videos, Voices, Chats...) ៖", Markup.inlineKeyboard(buttons));
+});
+
+// CONFIRM DELETE PROMPT
+bot.action(/^confirm_delete:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+  const db = getDatabase();
+  const targetTitle = db.groupTitles[chatId] || "Group/Channel";
+
+  return ctx.editMessageText(
+    `⚠️ **តើអ្នកប្រាកដដែរឬទេថាចង់លុបសារទាំងអស់ក្នុង "${targetTitle}"?**\n\nសាររួមមាន៖ រូបភាព, វីដេអូ, ឆាត, សំឡេង, និង Sticker ទាំងអស់។`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("✅ ប្រាកដ (លុបទាំងអស់)", `exec_delete:${chatId}`),
+        Markup.button.callback("❌ បោះបង់", "cancel_delete")
+      ]
+    ])
+  );
+});
+
+bot.action("cancel_delete", async (ctx) => {
+  await ctx.answerCbQuery("បានបោះបង់!");
+  return ctx.editMessageText("❌ បានបោះបង់ប្រតិបត្តិការលុបសារ!");
+});
+
+// EXECUTE DELETE ACTION
+bot.action(/^exec_delete:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+  const db = getDatabase();
+  const targetTitle = db.groupTitles[chatId] || "Group/Channel";
+
+  await ctx.editMessageText(`⏳ **កំពុងចាប់ផ្តើមលុបសារទាំងអស់ក្នុង "${targetTitle}"...**`);
+
+  let deletedCount = 0;
+  let failedCount = 0;
+
+  // វិធីទី ១ ៖ លុបតាមប្រវត្តិ Message IDs ដែលបានកត់ត្រាទុក
+  const trackedMsgIds = db.recentMsgIds[chatId] || [];
+  
+  if (trackedMsgIds.length > 0) {
+    for (const msgId of trackedMsgIds) {
+      try {
+        await ctx.telegram.deleteMessage(chatId, msgId);
+        deletedCount++;
+      } catch (e) {
+        failedCount++;
+      }
+      await new Promise(r => setTimeout(r, 40)); // Prevent rate limit
+    }
+  } else {
+    // វិធីទី ២ ៖ បើគ្មានកំណត់ត្រា ស្កេនលុបសារ ៣០០ ចុងក្រោយស្វ័យប្រវត្តិ
+    try {
+      const topMsg = await ctx.telegram.sendMessage(chatId, "🧹 Cleaning...");
+      const topId = topMsg.message_id;
+      await ctx.telegram.deleteMessage(chatId, topId);
+
+      for (let id = topId - 1; id >= Math.max(1, topId - 300); id--) {
+        try {
+          await ctx.telegram.deleteMessage(chatId, id);
+          deletedCount++;
+        } catch (e) {
+          failedCount++;
+        }
+        await new Promise(r => setTimeout(r, 40));
+      }
+    } catch (err) {
+      console.error("Delete Error:", err.message);
+    }
+  }
+
+  db.recentMsgIds[chatId] = [];
+  await saveDatabase(db);
+
+  return ctx.telegram.editMessageText(
+    `✅ **លុបសារបានជោគជ័យ!**\n\n📌 **Group/Channel:** ${targetTitle}\n🗑️ ចំនួនសារដែលបានលុប៖ **${deletedCount}**`
+  );
+});
+
+// --- 6. /RATE BUTTON MENU ---
 bot.command('rate', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const username = (ctx.from.username || "").toLowerCase();
@@ -221,7 +361,6 @@ bot.command('rate', async (ctx) => {
   );
 });
 
-// RATE BUTTON ACTIONS
 bot.action(/^set_rate:(.+)$/, async (ctx) => {
   const choice = ctx.match[1];
   const db = getDatabase();
@@ -242,7 +381,7 @@ bot.action(/^set_rate:(.+)$/, async (ctx) => {
   }
 });
 
-// --- 6. /DELIVERY BUTTON MENU ---
+// --- 7. /DELIVERY BUTTON MENU ---
 bot.command('delivery', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const username = (ctx.from.username || "").toLowerCase();
@@ -278,7 +417,6 @@ bot.command('delivery', async (ctx) => {
   );
 });
 
-// DELIVERY BUTTON ACTIONS
 bot.action(/^set_del:(.+)$/, async (ctx) => {
   const choice = ctx.match[1];
   const db = getDatabase();
@@ -297,7 +435,7 @@ bot.action(/^set_del:(.+)$/, async (ctx) => {
   }
 });
 
-// --- 7. /ACCEPT COMMAND (SHOW GROUP BUTTON LIST) ---
+// --- 8. /ACCEPT COMMAND ---
 bot.command('accept', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
@@ -324,7 +462,6 @@ bot.command('accept', async (ctx) => {
   return ctx.reply("👇 សូមជ្រើសរើស Group ដែលអ្នកចង់ Approve Join Requests៖", Markup.inlineKeyboard(buttons));
 });
 
-// ACCEPT GROUP BUTTON ACTIONS
 bot.action(/^approve_group:(.+)$/, async (ctx) => {
   const chatId = ctx.match[1];
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
@@ -393,7 +530,7 @@ bot.action(/^approve_group:(.+)$/, async (ctx) => {
   );
 });
 
-// --- 8. DYNAMIC REGEX COMMANDS (/rateXXXX, /deliveryXXX) ---
+// --- 9. DYNAMIC REGEX COMMANDS (/rateXXXX, /deliveryXXX) ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -404,7 +541,6 @@ bot.use(async (ctx, next) => {
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
   const isAllowed = isAdmin || (username && db.allowedUsers[username]);
 
-  // /rateXXXX (ឧទាហរណ៍ /rate4080)
   const rateMatch = text.match(/^\/rate(\d+)$/i);
   if (rateMatch && isAllowed) {
     const customRate = parseFloat(rateMatch[1]);
@@ -414,7 +550,6 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
   }
 
-  // /deliveryXXX (ឧទាហរណ៍ /delivery2.5)
   const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
   if (delMatch && isAllowed) {
     const customDelivery = parseFloat(delMatch[1]);
@@ -426,12 +561,12 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 9. START COMMAND HANDLER ---
+// --- 10. START COMMAND HANDLER ---
 bot.start(async (ctx) => {
   return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
 });
 
-// --- 10. AUTHORIZATION MIDDLEWARE (/username, /unusername) ---
+// --- 11. AUTHORIZATION MIDDLEWARE ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -440,11 +575,10 @@ bot.use(async (ctx, next) => {
 
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  // /username
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
-    const systemCmds = ['start', 'accept', 'rate', 'delivery'];
+    const systemCmds = ['start', 'accept', 'delete', 'rate', 'delivery'];
     
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
       if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
@@ -454,7 +588,6 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // /unusername
   const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
   if (removeMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -471,7 +604,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 11. GROUP MODERATION ---
+// --- 12. GROUP MODERATION ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -504,7 +637,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- 12. ORDER PARSER ---
+// --- 13. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -520,7 +653,7 @@ function parseOrderText(text) {
       let line = lines[i];
 
       if (line.includes('— Order') || line.includes('– Order')) {
-        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
       }
 
       if (line.includes('ឈ្មោះ:')) {
@@ -599,7 +732,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- 13. CANVAS RENDERER ---
+// --- 14. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -811,7 +944,7 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- 14. EXPRESS ROUTES & MESSAGE HANDLERS ---
+// --- 15. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
@@ -896,7 +1029,7 @@ bot.on('text', async (ctx, next) => {
   return next();
 });
 
-// --- 15. START APP ---
+// --- 16. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
@@ -906,10 +1039,10 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, Rate Buttons & Delivery Buttons Active!");
+  console.log("Bot, Database, and Delete Feature Active!");
 }
 
 startApp();
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
+processonce('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
