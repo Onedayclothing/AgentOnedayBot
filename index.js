@@ -67,7 +67,8 @@ let memoryDB = {
     exchangeRate: 4045, 
     isAutoRate: true,
     defaultDeliveryFee: null 
-  } 
+  },
+  allowedUsers: {} // រក្សាទុកបញ្ជី User ទទួលបានសិទ្ធិ { username: true }
 };
 
 if (fs.existsSync(dbFile)) {
@@ -75,6 +76,9 @@ if (fs.existsSync(dbFile)) {
     memoryDB = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     if (!memoryDB.settings) {
       memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+    }
+    if (!memoryDB.allowedUsers) {
+      memoryDB.allowedUsers = {};
     }
   } catch (e) {
     console.error("Error reading dbFile:", e);
@@ -95,6 +99,9 @@ async function initDB() {
         memoryDB = res.rows[0].data;
         if (!memoryDB.settings) {
           memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+        }
+        if (!memoryDB.allowedUsers) {
+          memoryDB.allowedUsers = {};
         }
         console.log("Database restored successfully from PostgreSQL!");
       } else {
@@ -146,7 +153,7 @@ async function fetchLiveExchangeRate() {
   }
 }
 
-// --- 3. TELEGRAM / COMMAND MENU SETUP ---
+// --- 3. TELEGRAM COMMAND MENU ---
 async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
@@ -157,20 +164,50 @@ async function setupCommandsMenu() {
       { command: 'delivery1', description: 'កំណត់ថ្លៃដឹក $1 (ឬលេខផ្សេង)' },
       { command: 'deliveryauto', description: 'គិតថ្លៃដឹកតាម Order ដើម' }
     ]);
-    console.log("Commands Menu configured!");
   } catch (err) {
     console.error("Error setting commands menu:", err.message);
   }
 }
 
-// --- 4. DYNAMIC COMMAND HANDLERS (/rateXXXX, /deliveryXXX) ---
+// --- 4. START COMMAND HANDLER ---
+bot.start(async (ctx) => {
+  return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
+});
+
+// --- 5. AUTHORIZATION COMMANDS & SETTINGS (/username, /unusername) ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
   const senderId = ctx.from.id.toString();
   const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
 
-  // /ratebank
+  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username (ឧទាហរណ៍ /john_doe)
+  const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
+  if (addMatch && isAdmin) {
+    const targetUser = addMatch[1].toLowerCase();
+    const systemCmds = ['start', 'ratebank', 'deliveryfree', 'deliveryauto', 'unname'];
+    
+    if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
+      const db = getDatabase();
+      db.allowedUsers[targetUser] = true;
+      await saveDatabase(db);
+      return ctx.reply(`✅ បានអនុញ្ញាតឱ្យ @${addMatch[1]} ប្រើប្រាស់ Bot រហូតរៀងទៅ!`);
+    }
+  }
+
+  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername (ឧទាហរណ៍ /unjohn_doe)
+  const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
+  if (removeMatch && isAdmin) {
+    const targetUser = removeMatch[1].toLowerCase();
+    const db = getDatabase();
+    if (db.allowedUsers[targetUser]) {
+      delete db.allowedUsers[targetUser];
+      await saveDatabase(db);
+      return ctx.reply(`❌ បានលុបសិទ្ធិប្រើប្រាស់របស់ @${removeMatch[1]} រួចរាល់!`);
+    }
+  }
+
+  // ៣. /ratebank
   if (text.toLowerCase() === '/ratebank') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -180,7 +217,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🔄 បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ! Rate: ${db.settings.exchangeRate} KHR`);
   }
 
-  // /rateXXXX (ឧទាហរណ៍ /rate4050)
+  // ៤. /rateXXXX
   const rateMatch = text.match(/^\/rate(\d+)$/i);
   if (rateMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -192,7 +229,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
   }
 
-  // /deliveryfree ឬ /delivery0
+  // ៥. /deliveryfree ឬ /delivery0
   if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -201,7 +238,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
   }
 
-  // /deliveryXXX (ឧទាហរណ៍ /delivery1.5)
+  // ៦. /deliveryXXX
   const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
   if (delMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -212,7 +249,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
   }
 
-  // /deliveryauto
+  // ៧. /deliveryauto
   if (text.toLowerCase() === '/deliveryauto') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -224,7 +261,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 5. GROUP MODERATION (DELETE JOIN/LEAVE & LINKS) ---
+// --- 6. GROUP MODERATION (DELETE JOIN/LEAVE & LINKS) ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -257,7 +294,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- 6. ORDER PARSER ---
+// --- 7. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -352,7 +389,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- 7. CANVAS RENDERER ---
+// --- 8. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -564,7 +601,7 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- 8. EXPRESS ROUTES & BOT MESSAGE LISTENERS ---
+// --- 9. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
@@ -577,6 +614,17 @@ bot.on('text', async (ctx, next) => {
     return next();
   }
 
+  // ពិនិត្យសិទ្ធិប្រើប្រាស់មុខងារបង្កើត Invoice (Admin និង User ក្នុងបញីឈ្នោះអនុញ្ញាត)
+  const senderId = ctx.from.id.toString();
+  const username = (ctx.from.username || '').toLowerCase();
+  const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
+  const db = getDatabase();
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកមិនទាន់ទទួលបានសិទ្ធិប្រើប្រាស់មុខងារបង្កើត Invoice នេះទេ។");
+  }
+
   if (text.includes('Order') || text.includes('ព័ត៌មានអតិថិជន') || text.includes('ទំនិញ')) {
     const orderData = parseOrderText(text);
     if (!orderData || orderData.items.length === 0) {
@@ -586,7 +634,6 @@ bot.on('text', async (ctx, next) => {
     await ctx.reply("⏳ កំពុងបង្កើតរូបភាពវិក្កយបត្រ...");
 
     try {
-      const db = getDatabase();
       const currentRate = db.settings.exchangeRate || 4045;
       const imageBuffers = await generateInvoiceImages(orderData, currentRate);
 
@@ -639,11 +686,7 @@ bot.on('text', async (ctx, next) => {
   return next();
 });
 
-bot.start(async (ctx) => {
-  ctx.reply(`🤖 Bot ដំណើរការជោគជ័យ (Free ឥតគិតថ្លៃ)!\n\nគ្រាន់តែ Copy & Paste អត្ថបទ Order ចូលទីនេះ វានឹងចេញជារូបភាពវិក្កយបត្រស្អាតល្អជូនភ្លាមៗ!`);
-});
-
-// --- 9. START APP ---
+// --- 10. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
@@ -653,7 +696,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, Khmer Font, and Commands Menu started successfully!");
+  console.log("Bot, Database, Khmer Font, and Dynamic Permissions started successfully!");
 }
 
 startApp();
