@@ -3,6 +3,7 @@ import re
 import json
 import random
 import urllib.request
+import asyncio
 from datetime import datetime
 import pytz
 import psycopg2
@@ -29,7 +30,6 @@ def setup_khmer_font():
 setup_khmer_font()
 
 # --- 2. ENV & DATABASE SETUP ---
-PORT = int(os.environ.get("PORT", 8080))
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -130,9 +130,6 @@ def home():
 @app.route('/form')
 def form():
     return render_template_string("<!DOCTYPE html><html lang='km'><head><meta charset='UTF-8'><title>Invoice Bot</title></head><body style='font-family:sans-serif; text-align:center; padding-top:50px;'><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>")
-
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT, use_reloader=False)
 
 # --- 4. ORDER PARSER ---
 def parse_order_text(text):
@@ -439,27 +436,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Error generating invoice:", e)
             await update.message.reply_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
 
-# --- 7. MAIN STARTUP ---
-def main():
-    init_db()
-    fetch_live_exchange_rate()
-
-    # Start Flask Web Server
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
+# --- 7. BACKGROUND TELEGRAM BOT RUNNER ---
+def start_bot():
     if not BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN is missing!")
         return
 
-    # Start Telegram Bot Polling
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app_bot = Application.builder().token(BOT_TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start_command))
     app_bot.add_handler(CommandHandler("setrate", setrate_command))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot and Web Server started successfully!")
-    app_bot.run_polling()
+    print("Telegram Bot Starting...")
+    loop.run_until_complete(app_bot.initialize())
+    loop.run_until_complete(app_bot.start())
+    loop.run_until_complete(app_bot.updater.start_polling())
+    loop.run_forever()
 
-if __name__ == '__main__':
-    main()
+# Init Database
+init_db()
+fetch_live_exchange_rate()
+
+# Start Bot Thread (Run Only Once)
+bot_thread = Thread(target=start_bot, daemon=True)
+bot_thread.start()
