@@ -2,14 +2,15 @@ import os
 import re
 import math
 import random
+import threading
 from datetime import datetime
 import zoneinfo
 import requests
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
-# --- 1. GET TELEGRAM BOT TOKEN ---
+# --- 1. GET TELEGRAM TOKEN ---
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
@@ -32,30 +33,20 @@ def fetch_live_bank_rate():
 
 fetch_live_bank_rate()
 
-# --- 2. KHMER FONT SETUP (Kantumruy Pro) ---
+# --- 2. KHMER FONT SETUP ---
 FONT_DIR = "fonts"
-FONT_PATH = os.path.join(FONT_DIR, "KantumruyPro-Medium.ttf")
-FONT_BOLD_PATH = os.path.join(FONT_DIR, "KantumruyPro-Bold.ttf")
+FONT_PATH = os.path.join(FONT_DIR, "Battambang-Bold.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONT_DIR):
         os.makedirs(FONT_DIR)
-    
     if not os.path.exists(FONT_PATH):
-        print("Downloading KantumruyPro Medium Font...")
-        url = "https://github.com/google/fonts/raw/main/ofl/kantumruypro/KantumruyPro-Medium.ttf"
+        print("Downloading Khmer Bold Font...")
+        url = "https://github.com/google/fonts/raw/main/ofl/battambang/Battambang-Bold.ttf"
         res = requests.get(url)
         with open(FONT_PATH, "wb") as f:
             f.write(res.content)
-            
-    if not os.path.exists(FONT_BOLD_PATH):
-        print("Downloading KantumruyPro Bold Font...")
-        url = "https://github.com/google/fonts/raw/main/ofl/kantumruypro/KantumruyPro-Bold.ttf"
-        res = requests.get(url)
-        with open(FONT_BOLD_PATH, "wb") as f:
-            f.write(res.content)
-            
-    print("Khmer Fonts setup completed!")
+        print("Khmer Font downloaded!")
 
 setup_khmer_font()
 
@@ -161,9 +152,9 @@ def parse_order_text(text):
 
 def render_single_page(data, page_items, start_idx, page_num, total_pages, exchange_rate):
     S = 3.0
-    font_large = ImageFont.truetype(FONT_BOLD_PATH, int(28 * S))
-    font_medium = ImageFont.truetype(FONT_BOLD_PATH, int(18 * S))
-    font_normal = ImageFont.truetype(FONT_PATH, int(16 * S))
+    font_large = ImageFont.truetype(FONT_PATH, int(30 * S))
+    font_medium = ImageFont.truetype(FONT_PATH, int(20 * S))
+    font_normal = ImageFont.truetype(FONT_PATH, int(18 * S))
 
     base_width = 850
     width = int(base_width * S)
@@ -277,11 +268,10 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         y += int(30 * S)
 
     # Footer
-    draw.text((int(width / 2), int(height - (30 * S))), "អរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
+    draw.text((int(width / 2), int(height - (30 * S))), "!", font=font_medium, fill="#475569", anchor="mm")
 
-    # FIX: ប្រើ PNG Format ជំនួស JPEG ដើម្បីចៀសវាង Error unknown file format
-    output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.png"
-    img.save(output_path, "PNG")
+    output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
+    img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
     return output_path
 
 def generate_invoice_images(data):
