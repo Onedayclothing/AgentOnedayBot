@@ -1,2 +1,0 @@
-[phases.setup]
-nixPkgs = ["python3", "zlib", "libjpeg", "freetype", "lcms2", "openjpeg", "libtiff"]
