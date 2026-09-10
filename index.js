@@ -1,9 +1,6 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
+const { createCanvas } = require('@napi-rs/canvas');
 const { Pool } = require('pg');
 
 const app = express();
@@ -11,33 +8,7 @@ const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// --- 1. DOWNLOAD & REGISTER KHMER FONT ---
-const fontsDir = path.join(__dirname, 'fonts');
-const fontPath = path.join(fontsDir, 'NotoSansKhmer.ttf');
-
-if (!fs.existsSync(fontsDir)) fs.mkdirSync(fontsDir, { recursive: true });
-
-function downloadFont() {
-  return new Promise((resolve) => {
-    if (fs.existsSync(fontPath)) {
-      GlobalFonts.registerFromPath(fontPath, 'KhmerFont');
-      return resolve();
-    }
-    console.log('Downloading Khmer Font...');
-    const file = fs.createWriteStream(fontPath);
-    https.get('https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer%5Bwdth%2Cwght%5D.ttf', (res) => {
-      res.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        GlobalFonts.registerFromPath(fontPath, 'KhmerFont');
-        console.log('Font loaded successfully!');
-        resolve();
-      });
-    });
-  });
-}
-
-// --- 2. DATABASE ---
+// --- 1. DATABASE SETUP ---
 let pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
 let exchangeRate = 4045;
 
@@ -54,7 +25,7 @@ async function initDb() {
   }
 }
 
-// --- 3. PARSE ORDER ---
+// --- 2. PARSE ORDER TEXT ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -98,7 +69,7 @@ function parseOrderText(text) {
   }
 }
 
-// --- 4. RENDER INVOICE CANVAS ---
+// --- 3. RENDER INVOICE CANVAS ---
 function renderInvoice(data) {
   const width = 850;
   const itemsHeight = data.items.length * 45;
@@ -107,27 +78,33 @@ function renderInvoice(data) {
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
 
+  // Background
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
 
+  // Top Bar
   ctx.fillStyle = '#0284c7';
   ctx.fillRect(0, 0, width, 12);
 
+  // System Sans-Serif Font Fallback
+  const fontMain = 'sans-serif';
+
+  // Title & Header
   ctx.fillStyle = '#000000';
-  ctx.font = 'bold 28px KhmerFont';
+  ctx.font = `bold 28px ${fontMain}`;
   ctx.fillText(data.shopName.toUpperCase(), 50, 55);
 
-  ctx.font = '15px KhmerFont';
+  ctx.font = `15px ${fontMain}`;
   ctx.fillStyle = '#1e293b';
   ctx.fillText('Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ', 50, 85);
 
   const invNum = Math.floor(100000 + Math.random() * 900000);
   ctx.fillStyle = '#0284c7';
-  ctx.font = 'bold 20px KhmerFont';
+  ctx.font = `bold 20px ${fontMain}`;
   ctx.fillText(`#INV-${invNum}`, 650, 55);
 
   ctx.fillStyle = '#000000';
-  ctx.font = '15px KhmerFont';
+  ctx.font = `15px ${fontMain}`;
   const now = new Date().toLocaleDateString('en-GB');
   ctx.fillText(`Date: ${now}`, 650, 85);
 
@@ -135,7 +112,8 @@ function renderInvoice(data) {
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(50, 110); ctx.lineTo(750, 110); ctx.stroke();
 
-  ctx.font = '16px KhmerFont';
+  // Customer Info
+  ctx.font = `16px ${fontMain}`;
   ctx.fillText(`ឈ្មោះអតិថិជន៖ ${data.name}`, 50, 140);
   ctx.fillText(`លេខទូរស័ព្ទ៖ ${data.phone}`, 50, 168);
   ctx.fillText(`អាសយដ្ឋាន៖ ${data.address}`, 50, 196);
@@ -144,12 +122,13 @@ function renderInvoice(data) {
     ctx.fillText(`ទីតាំង Map៖ ${data.mapUrl}`, 50, 224);
   }
 
+  // Table Header
   let startY = data.mapUrl ? 250 : 220;
   ctx.fillStyle = '#e2e8f0';
   ctx.fillRect(50, startY, 700, 40);
 
   ctx.fillStyle = '#000000';
-  ctx.font = 'bold 16px KhmerFont';
+  ctx.font = `bold 16px ${fontMain}`;
   ctx.fillText('No.', 65, startY + 26);
   ctx.fillText('ទំនិញ / Details', 120, startY + 26);
   ctx.fillText('ទំហំ', 380, startY + 26);
@@ -157,9 +136,10 @@ function renderInvoice(data) {
   ctx.fillText('តម្លៃ/ឯកតា', 540, startY + 26);
   ctx.fillText('សរុប', 680, startY + 26);
 
+  // Table Items
   startY += 60;
   data.items.forEach((item, idx) => {
-    ctx.font = '16px KhmerFont';
+    ctx.font = `16px ${fontMain}`;
     ctx.fillText(`${idx + 1}`, 65, startY);
     ctx.fillText(item.name, 120, startY);
     ctx.fillText(item.size, 380, startY);
@@ -173,8 +153,9 @@ function renderInvoice(data) {
     startY += 45;
   });
 
+  // Footer Totals
   startY += 10;
-  ctx.font = '16px KhmerFont';
+  ctx.font = `16px ${fontMain}`;
   ctx.fillText('ថ្លៃទំនិញសរុប (Subtotal):', 50, startY);
   ctx.fillText(`$${data.subtotal.toFixed(2)}`, 680, startY);
 
@@ -188,28 +169,27 @@ function renderInvoice(data) {
   ctx.beginPath(); ctx.moveTo(50, startY); ctx.lineTo(750, startY); ctx.stroke();
 
   startY += 30;
-  ctx.font = 'bold 18px KhmerFont';
+  ctx.font = `bold 18px ${fontMain}`;
   ctx.fillText('តម្លៃសរុបចុងក្រោយ (Grand Total):', 50, startY);
   ctx.fillStyle = '#0284c7';
-  ctx.font = 'bold 22px KhmerFont';
+  ctx.font = `bold 22px ${fontMain}`;
   ctx.fillText(`$${data.grandTotal.toFixed(2)}`, 680, startY);
 
   const khrTotal = Math.round(data.grandTotal * exchangeRate).toLocaleString();
   ctx.fillStyle = '#000000';
-  ctx.font = '16px KhmerFont';
+  ctx.font = `16px ${fontMain}`;
   ctx.fillText(`(៛ ${khrTotal})`, 680, startY + 25);
 
   return canvas.toBuffer('image/jpeg');
 }
 
-// --- 5. START BOT & SERVER ---
+// --- 4. EXPRESS SERVER & TELEGRAM BOT ---
 app.get('/', (req, res) => res.send('Invoice Bot Active!'));
 app.listen(PORT, () => console.log(`Server on port ${PORT}`));
 
-downloadFont().then(() => {
-  initDb();
-  if (!BOT_TOKEN) return;
+initDb();
 
+if (BOT_TOKEN) {
   const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
   bot.onText(/\/start/, (msg) => bot.sendMessage(msg.chat.id, '🤖 Bot ដំណើរការជោគជ័យ! Copy-paste អត្ថបទ Order ដើម្បីបង្កើតវិក្កយបត្រ។'));
@@ -225,11 +205,11 @@ downloadFont().then(() => {
       bot.sendMessage(msg.chat.id, '⏳ កំពុងបង្កើតរូបភាពវិក្កយបត្រ...');
       try {
         const imgBuffer = renderInvoice(orderData);
-        bot.sendPhoto(msg.chat.id, imgBuffer, { caption: `📄 **វិក្កយបត្រ — ${orderData.shopName}**` });
+        bot.sendPhoto(msg.chat.id, imgBuffer, { caption: `📄 **វិក្កយបត្រ — ${orderData.shopName}**` }, { filename: 'invoice.jpg', contentType: 'image/jpeg' });
       } catch (err) {
-        console.error(err);
+        console.error('Render Error:', err);
         bot.sendMessage(msg.chat.id, '❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព!');
       }
     }
   });
-});
+}
