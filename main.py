@@ -10,6 +10,9 @@ from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
+# Import UHarfBuzz សម្រាប់ Shaping Khmer Font
+import uharfbuzz as hb
+
 # --- 1. GET TELEGRAM TOKEN ---
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
@@ -49,6 +52,66 @@ def setup_khmer_font():
         print("Khmer Font downloaded!")
 
 setup_khmer_font()
+
+# Cache Font Face សម្រាប់ HarfBuzz
+hb_blob = hb.Blob.from_file_path(FONT_PATH)
+hb_face = hb.Face(hb_blob)
+hb_font = hb.Font(hb_face)
+
+# --- KHMER TEXT SHAPING FUNCTION ---
+def render_khmer_text(draw, position, text, font, font_size, fill="#000000", anchor=None):
+    """
+    Function សម្រាប់ Draw Khmer Text ជាមួយ HarfBuzz លើ Pillow ImageDraw
+    """
+    if not text:
+        return (0, 0)
+
+    # 1. Shape Text ជាមួយ HarfBuzz
+    buf = hb.Buffer()
+    buf.add_str(text)
+    buf.guess_segment_properties()
+    hb.shape(hb_font, buf)
+
+    infos = buf.glyph_infos
+    positions = buf.glyph_positions
+
+    # 2. រកទំហំ Width និង Height Text
+    scale = font_size / hb_face.upem
+    total_width = sum([pos.x_advance for pos in positions]) * scale
+    
+    # Font Metrics
+    ascent, descent = font.getmetrics()
+    total_height = ascent + descent
+
+    x, y = position
+
+    # Handle Alignment (Anchor)
+    if anchor == "ra": # Right Align
+        x -= total_width
+    elif anchor == "mm": # Center Align
+        x -= (total_width / 2)
+
+    # 3. គូរ Glyphs នីមួយៗលើ Image
+    curr_x = x
+    curr_y = y
+
+    for info, pos in zip(infos, positions):
+        gid = info.codepoint
+        x_off = pos.x_offset * scale
+        y_off = pos.y_offset * scale
+        x_adv = pos.x_advance * scale
+        y_adv = pos.y_advance * scale
+
+        # បំបែក Glyph ID ទៅជា Character Glyph របស់ Pillow Font
+        glyph_char = chr(font.getfont(text).getembd().get_glyph_index(gid)) if hasattr(font, 'getfont') else font.getname()
+        
+        # Draw Glyph នីមួយៗទៅតាម Position ដែល HarfBuzz បានរៀប
+        draw.text((curr_x + x_off, curr_y - y_off), chr(0x10000 + gid) if gid > 0 else "", font=font, fill=fill)
+        
+        curr_x += x_adv
+        curr_y -= y_adv
+
+    return (total_width, total_height)
 
 # --- 3. HELPER: TEXT WRAPPER ---
 def wrap_text_max2(text, font, max_width, draw):
