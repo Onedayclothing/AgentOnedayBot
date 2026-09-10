@@ -32,7 +32,7 @@ def fetch_live_bank_rate():
 
 fetch_live_bank_rate()
 
-# --- 2. KHMER FONT SETUP (Kantumruy Pro for perfect rendering) ---
+# --- 2. KHMER FONT SETUP (Kantumruy Pro) ---
 FONT_DIR = "fonts"
 FONT_PATH = os.path.join(FONT_DIR, "KantumruyPro-Medium.ttf")
 FONT_BOLD_PATH = os.path.join(FONT_DIR, "KantumruyPro-Bold.ttf")
@@ -279,8 +279,9 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
     # Footer
     draw.text((int(width / 2), int(height - (30 * S))), "អរគុណសម្រាប់ការបញ្ជាទិញ!", font=font_medium, fill="#475569", anchor="mm")
 
-    output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
-    img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
+    # FIX: ប្រើ PNG Format ជំនួស JPEG ដើម្បីចៀសវាង Error unknown file format
+    output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.png"
+    img.save(output_path, "PNG")
     return output_path
 
 def generate_invoice_images(data):
