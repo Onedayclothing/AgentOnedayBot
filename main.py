@@ -3,13 +3,11 @@ import re
 import json
 import random
 import urllib.request
-import asyncio
 from datetime import datetime
 import pytz
 import psycopg2
 import requests
 from flask import Flask, render_template_string
-from threading import Thread
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -436,30 +434,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("Error generating invoice:", e)
             await update.message.reply_text(f"❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ {e}")
 
-# --- 7. BACKGROUND TELEGRAM BOT RUNNER ---
-def start_bot():
+# --- 7. MAIN ENTRY POINT ---
+if __name__ == '__main__':
+    init_db()
+    fetch_live_exchange_rate()
+
     if not BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN is missing!")
-        return
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    app_bot = Application.builder().token(BOT_TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start_command))
-    app_bot.add_handler(CommandHandler("setrate", setrate_command))
-    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Telegram Bot Starting...")
-    loop.run_until_complete(app_bot.initialize())
-    loop.run_until_complete(app_bot.start())
-    loop.run_until_complete(app_bot.updater.start_polling())
-    loop.run_forever()
-
-# Init Database
-init_db()
-fetch_live_exchange_rate()
-
-# Start Bot Thread (Run Only Once)
-bot_thread = Thread(target=start_bot, daemon=True)
-bot_thread.start()
+    else:
+        print("Starting Telegram Bot...")
+        app_bot = Application.builder().token(BOT_TOKEN).build()
+        app_bot.add_handler(CommandHandler("start", start_command))
+        app_bot.add_handler(CommandHandler("setrate", setrate_command))
+        app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Run Bot Polling Direct
+        app_bot.run_polling()
