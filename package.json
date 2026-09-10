@@ -6,9 +6,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.52",
-    "axios": "^1.6.8",
-    "dotenv": "^16.4.5",
+    "canvas": "^2.11.2",
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
     "pg": "^8.11.5"
