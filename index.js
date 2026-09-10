@@ -69,8 +69,8 @@ let memoryDB = {
     defaultDeliveryFee: null 
   },
   allowedUsers: {},
-  pendingRequests: {}, // { chatId: [userId1, userId2] }
-  groupTitles: {}      // { chatId: "Group Name" }
+  pendingRequests: {},
+  groupTitles: {}
 };
 
 if (fs.existsSync(dbFile)) {
@@ -156,12 +156,9 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
-      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' },
-      { command: 'ratebank', description: 'កំណត់ Rate តាមធនាគារ (Live)' },
-      { command: 'rate4050', description: 'កំណត់ Rate ថេរ (ឧទាហរណ៍ 4050)' },
-      { command: 'deliveryfree', description: 'កំណត់ថ្លៃដឹក Free ($0)' },
-      { command: 'delivery1', description: 'កំណត់ថ្លៃដឹក $1 (ឬលេខផ្សេង)' },
-      { command: 'deliveryauto', description: 'គិតថ្លៃដឹកតាម Order ដើម' }
+      { command: 'rate', description: 'កំណត់អត្រាប្តូរប្រាក់ (Rate Buttons)' },
+      { command: 'delivery', description: 'កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Buttons)' },
+      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' }
     ]);
   } catch (err) {
     console.error("Error setting commands menu:", err.message);
@@ -191,7 +188,116 @@ bot.on('chat_join_request', async (ctx) => {
   }
 });
 
-// --- 5. /ACCEPT COMMAND (SHOW GROUP BUTTON LIST) ---
+// --- 5. /RATE BUTTON MENU ---
+bot.command('rate', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+  }
+
+  const currentRateMode = db.settings.isAutoRate ? "Live ធនាគារ (Auto)" : `${db.settings.exchangeRate} KHR (Manual)`;
+
+  return ctx.reply(
+    `💱 **កំណត់អត្រាប្តូរប្រាក់ (Exchange Rate)**\n\nអត្រាបច្ចុប្បន្ន៖ **1 USD = ${db.settings.exchangeRate} KHR** (${currentRateMode})\n\nសូមជ្រើសរើស Option ខាងក្រោម ឬវាយត្រង់ /rate4080 (តាមចិត្ត)៖`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🏦 Bank Live Rate (ស្វ័យប្រវត្តិ)", "set_rate:bank")],
+      [
+        Markup.button.callback("4000 ៛", "set_rate:4000"),
+        Markup.button.callback("4050 ៛", "set_rate:4050"),
+        Markup.button.callback("4100 ៛", "set_rate:4100")
+      ],
+      [
+        Markup.button.callback("4120 ៛", "set_rate:4120"),
+        Markup.button.callback("4150 ៛", "set_rate:4150"),
+        Markup.button.callback("4200 ៛", "set_rate:4200")
+      ]
+    ])
+  );
+});
+
+// RATE BUTTON ACTIONS
+bot.action(/^set_rate:(.+)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const db = getDatabase();
+
+  if (choice === 'bank') {
+    db.settings.isAutoRate = true;
+    await saveDatabase(db);
+    await fetchLiveExchangeRate();
+    await ctx.answerCbQuery("បានកំណត់ប្រើ Bank Live Rate!");
+    return ctx.editMessageText(`🔄 **បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ!**\n\nRate បច្ចុប្បន្ន៖ **1 USD = ${db.settings.exchangeRate} KHR**`);
+  } else {
+    const customRate = parseFloat(choice);
+    db.settings.isAutoRate = false;
+    db.settings.exchangeRate = customRate;
+    await saveDatabase(db);
+    await ctx.answerCbQuery(`បានកំណត់ Rate ${customRate} KHR!`);
+    return ctx.editMessageText(`✅ **បានកំណត់ Rate ដោយខ្លួនឯង៖**\n\n1 USD = **${customRate} KHR**`);
+  }
+});
+
+// --- 6. /DELIVERY BUTTON MENU ---
+bot.command('delivery', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+  }
+
+  const currentDel = db.settings.defaultDeliveryFee === null 
+    ? "គិតតាម Order ដើម (Auto)" 
+    : `$${db.settings.defaultDeliveryFee.toFixed(2)}`;
+
+  return ctx.reply(
+    `🚚 **កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Fee)**\n\nថ្លៃដឹកបច្ចុប្បន្ន៖ **${currentDel}**\n\nសូមជ្រើសរើស Option ខាងក្រោម ឬវាយត្រង់ /delivery2.5 (តាមចិត្ត)៖`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🆓 Free ($0.00)", "set_del:0")],
+      [
+        Markup.button.callback("🚚 $1.00", "set_del:1"),
+        Markup.button.callback("🚚 $1.25", "set_del:1.25"),
+        Markup.button.callback("🚚 $1.50", "set_del:1.5")
+      ],
+      [
+        Markup.button.callback("🚚 $1.75", "set_del:1.75"),
+        Markup.button.callback("🚚 $2.00", "set_del:2"),
+        Markup.button.callback("🚚 $2.50", "set_del:2.5")
+      ],
+      [Markup.button.callback("🔄 គិតតាម Order អត្ថបទដើម", "set_del:auto")]
+    ])
+  );
+});
+
+// DELIVERY BUTTON ACTIONS
+bot.action(/^set_del:(.+)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const db = getDatabase();
+
+  if (choice === 'auto') {
+    db.settings.defaultDeliveryFee = null;
+    await saveDatabase(db);
+    await ctx.answerCbQuery("កំណត់គិតតាម Order ដើម!");
+    return ctx.editMessageText(`🔄 **ថ្លៃដឹកជញ្ជូននឹងគិតតាមការវាយបញ្ចូលក្នុង Order អត្ថបទដើមវិញ!**`);
+  } else {
+    const customDel = parseFloat(choice);
+    db.settings.defaultDeliveryFee = customDel;
+    await saveDatabase(db);
+    await ctx.answerCbQuery(`បានកំណត់ថ្លៃដឹក $${customDel.toFixed(2)}!`);
+    return ctx.editMessageText(`🚚 **បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDel.toFixed(2)}**`);
+  }
+});
+
+// --- 7. /ACCEPT COMMAND (SHOW GROUP BUTTON LIST) ---
 bot.command('accept', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
@@ -209,7 +315,6 @@ bot.command('accept', async (ctx) => {
     return ctx.reply("ℹ️ បច្ចុប្បន្នមិនមាន Group ណាដែលមាន Join Request មកទេ!");
   }
 
-  // បង្កើត Inline Buttons សម្រាប់ Group នីមួយៗ
   const buttons = pendingGroups.map((chatId) => {
     const title = db.groupTitles[chatId] || `Group ${chatId}`;
     const count = db.pendingRequests[chatId].length;
@@ -219,7 +324,7 @@ bot.command('accept', async (ctx) => {
   return ctx.reply("👇 សូមជ្រើសរើស Group ដែលអ្នកចង់ Approve Join Requests៖", Markup.inlineKeyboard(buttons));
 });
 
-// --- 6. HANDLE BUTTON CLICK TO APPROVE SELECTED GROUP ---
+// ACCEPT GROUP BUTTON ACTIONS
 bot.action(/^approve_group:(.+)$/, async (ctx) => {
   const chatId = ctx.match[1];
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
@@ -288,12 +393,7 @@ bot.action(/^approve_group:(.+)$/, async (ctx) => {
   );
 });
 
-// --- 7. START COMMAND HANDLER ---
-bot.start(async (ctx) => {
-  return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
-});
-
-// --- 8. AUTHORIZATION MIDDLEWARE ---
+// --- 8. DYNAMIC REGEX COMMANDS (/rateXXXX, /deliveryXXX) ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -302,12 +402,49 @@ bot.use(async (ctx, next) => {
   const db = getDatabase();
 
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  // /rateXXXX (ឧទាហរណ៍ /rate4080)
+  const rateMatch = text.match(/^\/rate(\d+)$/i);
+  if (rateMatch && isAllowed) {
+    const customRate = parseFloat(rateMatch[1]);
+    db.settings.isAutoRate = false;
+    db.settings.exchangeRate = customRate;
+    await saveDatabase(db);
+    return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
+  }
+
+  // /deliveryXXX (ឧទាហរណ៍ /delivery2.5)
+  const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
+  if (delMatch && isAllowed) {
+    const customDelivery = parseFloat(delMatch[1]);
+    db.settings.defaultDeliveryFee = customDelivery;
+    await saveDatabase(db);
+    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
+  }
+
+  return next();
+});
+
+// --- 9. START COMMAND HANDLER ---
+bot.start(async (ctx) => {
+  return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
+});
+
+// --- 10. AUTHORIZATION MIDDLEWARE (/username, /unusername) ---
+bot.use(async (ctx, next) => {
+  if (!ctx.message || !ctx.message.text) return next();
+  const text = ctx.message.text.trim();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
   // /username
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
-    const systemCmds = ['start', 'accept', 'ratebank', 'deliveryfree', 'deliveryauto'];
+    const systemCmds = ['start', 'accept', 'rate', 'delivery'];
     
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
       if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
@@ -331,56 +468,10 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // /ratebank
-  if (text.toLowerCase() === '/ratebank') {
-    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    db.settings.isAutoRate = true;
-    await saveDatabase(db);
-    await fetchLiveExchangeRate();
-    return ctx.reply(`🔄 បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ! Rate: ${db.settings.exchangeRate} KHR`);
-  }
-
-  // /rateXXXX
-  const rateMatch = text.match(/^\/rate(\d+)$/i);
-  if (rateMatch) {
-    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    const customRate = parseFloat(rateMatch[1]);
-    db.settings.isAutoRate = false;
-    db.settings.exchangeRate = customRate;
-    await saveDatabase(db);
-    return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
-  }
-
-  // /deliveryfree
-  if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
-    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    db.settings.defaultDeliveryFee = 0;
-    await saveDatabase(db);
-    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
-  }
-
-  // /deliveryXXX
-  const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
-  if (delMatch) {
-    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    const customDelivery = parseFloat(delMatch[1]);
-    db.settings.defaultDeliveryFee = customDelivery;
-    await saveDatabase(db);
-    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
-  }
-
-  // /deliveryauto
-  if (text.toLowerCase() === '/deliveryauto') {
-    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    db.settings.defaultDeliveryFee = null;
-    await saveDatabase(db);
-    return ctx.reply(`🔄 ថ្លៃដឹកជញ្ជូននឹងគិតតាមការវាយបញ្ចូលក្នុង Order អត្ថបទដើមវិញ!`);
-  }
-
   return next();
 });
 
-// --- 9. GROUP MODERATION & INSTANT DELETE SERVICE MESSAGES ---
+// --- 11. GROUP MODERATION ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -413,7 +504,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- 10. ORDER PARSER ---
+// --- 12. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -508,7 +599,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- 11. CANVAS RENDERER ---
+// --- 13. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -720,7 +811,7 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- 12. EXPRESS ROUTES & MESSAGE HANDLERS ---
+// --- 14. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
@@ -805,7 +896,7 @@ bot.on('text', async (ctx, next) => {
   return next();
 });
 
-// --- 13. START APP ---
+// --- 15. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
@@ -815,7 +906,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, and Interactive Group List Button Active!");
+  console.log("Bot, Database, Rate Buttons & Delivery Buttons Active!");
 }
 
 startApp();
