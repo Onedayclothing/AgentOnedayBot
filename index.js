@@ -70,8 +70,8 @@ let memoryDB = {
   },
   allowedUsers: {},
   pendingRequests: {},
-  groupTitles: {},     // { chatId: "Group/Channel Title" }
-  recentMsgIds: {}     // { chatId: [msgId1, msgId2, ...] }
+  groupTitles: {},
+  recentMsgIds: {}
 };
 
 if (fs.existsSync(dbFile)) {
@@ -159,7 +159,7 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
-      { command: 'delete', description: 'លុបសារ (Photo, Video, Voice...) ក្នុង Group/Channel' },
+      { command: 'delete', description: 'លុបសារក្នុង Group/Channel' },
       { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' },
       { command: 'rate', description: 'កំណត់អត្រាប្តូរប្រាក់ (Rate Buttons)' },
       { command: 'delivery', description: 'កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Buttons)' }
@@ -189,7 +189,6 @@ bot.on('chat_join_request', async (ctx) => {
   }
 });
 
-// Record incoming messages and titles from groups/channels
 bot.use(async (ctx, next) => {
   if (ctx.chat && (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup' || ctx.chat.type === 'channel')) {
     const chatId = ctx.chat.id.toString();
@@ -202,7 +201,6 @@ bot.use(async (ctx, next) => {
       if (!db.recentMsgIds[chatId]) db.recentMsgIds[chatId] = [];
       if (!db.recentMsgIds[chatId].includes(ctx.message.message_id)) {
         db.recentMsgIds[chatId].push(ctx.message.message_id);
-        // រក្សាទុកត្រឹម ១,០០០ ផ្ទាំងសារចុងក្រោយ
         if (db.recentMsgIds[chatId].length > 1000) {
           db.recentMsgIds[chatId].shift();
         }
@@ -213,7 +211,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 5. /DELETE COMMAND (SHOW GROUP/CHANNEL BUTTON LIST) ---
+// --- 5. /DELETE COMMAND ---
 bot.command('delete', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
@@ -237,7 +235,6 @@ bot.command('delete', async (ctx) => {
   return ctx.reply("👇 សូមជ្រើសរើស Group ឬ Channel ដែលអ្នកចង់លុបសារទាំងអស់ (Photos, Videos, Voices, Chats...) ៖", Markup.inlineKeyboard(buttons));
 });
 
-// CONFIRM DELETE PROMPT
 bot.action(/^confirm_delete:(.+)$/, async (ctx) => {
   const chatId = ctx.match[1];
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
@@ -267,7 +264,6 @@ bot.action("cancel_delete", async (ctx) => {
   return ctx.editMessageText("❌ បានបោះបង់ប្រតិបត្តិការលុបសារ!");
 });
 
-// EXECUTE DELETE ACTION
 bot.action(/^exec_delete:(.+)$/, async (ctx) => {
   const chatId = ctx.match[1];
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
@@ -286,7 +282,6 @@ bot.action(/^exec_delete:(.+)$/, async (ctx) => {
   let deletedCount = 0;
   let failedCount = 0;
 
-  // វិធីទី ១ ៖ លុបតាមប្រវត្តិ Message IDs ដែលបានកត់ត្រាទុក
   const trackedMsgIds = db.recentMsgIds[chatId] || [];
   
   if (trackedMsgIds.length > 0) {
@@ -297,10 +292,9 @@ bot.action(/^exec_delete:(.+)$/, async (ctx) => {
       } catch (e) {
         failedCount++;
       }
-      await new Promise(r => setTimeout(r, 40)); // Prevent rate limit
+      await new Promise(r => setTimeout(r, 40));
     }
   } else {
-    // វិធីទី ២ ៖ បើគ្មានកំណត់ត្រា ស្កេនលុបសារ ៣០០ ចុងក្រោយស្វ័យប្រវត្តិ
     try {
       const topMsg = await ctx.telegram.sendMessage(chatId, "🧹 Cleaning...");
       const topId = topMsg.message_id;
@@ -530,7 +524,7 @@ bot.action(/^approve_group:(.+)$/, async (ctx) => {
   );
 });
 
-// --- 9. DYNAMIC REGEX COMMANDS (/rateXXXX, /deliveryXXX) ---
+// --- 9. DYNAMIC REGEX COMMANDS ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -1044,5 +1038,5 @@ async function startApp() {
 
 startApp();
 
-processonce('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
