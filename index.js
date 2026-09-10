@@ -17,7 +17,6 @@ async function setupKhmerFont() {
 
     if (!fs.existsSync(fontPath)) {
       console.log("Downloading Khmer Bold Font from Google Fonts...");
-      // URL ផ្លូវការថ្មីរបស់ Battambang Bold (Google Fonts) ដើរ ១០០%
       const fontUrl = "https://raw.githubusercontent.com/google/fonts/main/ofl/battambang/Battambang-Bold.ttf";
       const response = await fetch(fontUrl);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -63,14 +62,18 @@ if (DATABASE_URL) {
 
 const dbFile = path.join(__dirname, 'licenses.json');
 let memoryDB = { 
-  settings: { exchangeRate: 4045, isAutoRate: true } 
+  settings: { 
+    exchangeRate: 4045, 
+    isAutoRate: true,
+    defaultDeliveryFee: null // null មានន័យថាគិតតាមអត្ថបទ Order ដើម
+  } 
 };
 
 if (fs.existsSync(dbFile)) {
   try {
     memoryDB = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
     if (!memoryDB.settings) {
-      memoryDB.settings = { exchangeRate: 4045, isAutoRate: true };
+      memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
     }
   } catch (e) {
     console.error("Error reading dbFile:", e);
@@ -90,7 +93,7 @@ async function initDB() {
       if (res.rows.length > 0) {
         memoryDB = res.rows[0].data;
         if (!memoryDB.settings) {
-          memoryDB.settings = { exchangeRate: 4045, isAutoRate: true };
+          memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
         }
         console.log("Database restored successfully from PostgreSQL!");
       } else {
@@ -125,6 +128,7 @@ async function saveDatabase(data) {
   }
 }
 
+// ទាញយក Rate Live តាមកន្លែង API អន្តរជាតិ/ធនាគារ
 async function fetchLiveExchangeRate() {
   const db = getDatabase();
   if (db.settings && db.settings.isAutoRate === false) return;
@@ -142,49 +146,99 @@ async function fetchLiveExchangeRate() {
   }
 }
 
-// --- SETUP COMMANDS MENU ---
-async function setupCommandsMenu() {
-  try {
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' }
-    ]);
-
-    if (ADMIN_CHAT_ID) {
-      await bot.telegram.setMyCommands([
-        { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
-        { command: 'setrate', description: 'កំណត់ Exchange Rate' }
-      ], { scope: { type: 'chat', chat_id: Number(ADMIN_CHAT_ID) } });
-    }
-  } catch (err) {
-    console.error("Error setting commands:", err.message);
-  }
-}
-
-// --- ADMIN COMMANDS ---
-bot.command('setrate', async (ctx) => {
+// --- Dynamic Commands RegEx ( /rate4050 ឬ /delivery2.5 ) ---
+bot.use(async (ctx, next) => {
+  if (!ctx.message || !ctx.message.text) return next();
+  const text = ctx.message.text.trim();
   const senderId = ctx.from.id.toString();
-  if (ADMIN_CHAT_ID && senderId !== ADMIN_CHAT_ID.toString()) {
-    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-  }
-  const args = ctx.message.text.split(' ').slice(1);
-  const db = getDatabase();
-  if (args.length === 0) {
-    return ctx.reply(`📊 Rate បច្ចុប្បន្ន៖ 1 USD = ${db.settings.exchangeRate} KHR`);
-  }
-  const val = args[0].toLowerCase().trim();
-  if (val === 'auto') {
+  const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
+
+  // 1. /ratebank
+  if (text.toLowerCase() === '/ratebank') {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const db = getDatabase();
     db.settings.isAutoRate = true;
     await saveDatabase(db);
     await fetchLiveExchangeRate();
-    return ctx.reply(`🔄 បើក Auto Exchange Rate រួចរាល់! Rate: ${getDatabase().settings.exchangeRate}`);
-  } else {
-    const rateNum = parseFloat(val);
-    if (isNaN(rateNum)) return ctx.reply("❌ លេខមិនត្រឹមត្រូវ!");
-    db.settings.isAutoRate = false;
-    db.settings.exchangeRate = rateNum;
-    await saveDatabase(db);
-    return ctx.reply(`✅ កំណត់ Rate ជោគជ័យ៖ 1 USD = ${rateNum} KHR`);
+    return ctx.reply(`🔄 បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ! Rate: ${db.settings.exchangeRate} KHR`);
   }
+
+  // 2. /rateXXXX (ឧទាហរណ៍ /rate4050 ឬ /rate4100)
+  const rateMatch = text.match(/^\/rate(\d+)$/i);
+  if (rateMatch) {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const customRate = parseFloat(rateMatch[1]);
+    const db = getDatabase();
+    db.settings.isAutoRate = false;
+    db.settings.exchangeRate = customRate;
+    await saveDatabase(db);
+    return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
+  }
+
+  // 3. /deliveryfree ឬ /delivery0
+  if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const db = getDatabase();
+    db.settings.defaultDeliveryFee = 0;
+    await saveDatabase(db);
+    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
+  }
+
+  // 4. /deliveryXXX (ឧទាហរណ៍ /delivery1.5 ឬ /delivery2)
+  const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
+  if (delMatch) {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const customDelivery = parseFloat(delMatch[1]);
+    const db = getDatabase();
+    db.settings.defaultDeliveryFee = customDelivery;
+    await saveDatabase(db);
+    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
+  }
+
+  // /deliveryauto - ត្រឡប់ទៅយកតាមការបូកក្នុង Text Order ដើមវិញ
+  if (text.toLowerCase() === '/deliveryauto') {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const db = getDatabase();
+    db.settings.defaultDeliveryFee = null;
+    await saveDatabase(db);
+    return ctx.reply(`🔄 ថ្លៃដឹកជញ្ជូននឹងគិតតាមការវាយបញ្ចូលក្នុង Order អត្ថបទដើមវិញ!`);
+  }
+
+  return next();
+});
+
+// --- 5. MUTE/DELETE LINK & JOIN/LEAVE MESSAGES IN GROUPS ---
+bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
+  try {
+    await ctx.deleteMessage(); // លុបសារ Join/Leave
+  } catch (e) {}
+});
+
+bot.on('message', async (ctx, next) => {
+  if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
+    return next();
+  }
+
+  try {
+    // ពិនិត្យមើលថាតើអ្នកផ្ញើជា Admin/Owner ឬអត់
+    const member = await ctx.getChatMember(ctx.from.id);
+    const isAdminOrOwner = ['administrator', 'creator'].includes(member.status);
+
+    if (!isAdminOrOwner) {
+      const text = ctx.message.text || ctx.message.caption || '';
+      const hasEntities = ctx.message.entities || ctx.message.caption_entities || [];
+      const isLink = hasEntities.some(e => e.type === 'url' || e.type === 'text_link') || /https?:\/\/[^\s]+/gi.test(text);
+
+      if (isLink) {
+        await ctx.deleteMessage(); // លុបសារដែលមាន Link ចោលភ្លាម
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("Group Moderation Error:", err.message);
+  }
+
+  return next();
 });
 
 // --- PARSER FOR ORDER TEXT ---
@@ -246,6 +300,12 @@ function parseOrderText(text) {
         }
         items.push({ name: itemName, size, qty, price, total: qty * price });
       }
+    }
+
+    // ពិនិត្យមើលថាតើមាន Set Custom Delivery Fee ឬអត់
+    const db = getDatabase();
+    if (db.settings && db.settings.defaultDeliveryFee !== null && db.settings.defaultDeliveryFee !== undefined) {
+      deliveryFee = db.settings.defaultDeliveryFee;
     }
 
     let subtotal = items.reduce((sum, item) => sum + item.total, 0);
@@ -574,7 +634,6 @@ async function startApp() {
   await initDB();
   fetchLiveExchangeRate();
   setInterval(fetchLiveExchangeRate, 12 * 60 * 60 * 1000);
-  setupCommandsMenu();
   bot.launch();
   console.log("Bot, Database, and Khmer Font started successfully!");
 }
