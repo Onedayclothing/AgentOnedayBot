@@ -15,14 +15,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # --- 1. SETUP KHMER FONT ---
 FONTS_DIR = "fonts"
-FONT_PATH = os.path.join(FONTS_DIR, "Battambang-Bold.ttf")
+FONT_PATH = os.path.join(FONTS_DIR, "KantumruyPro-Bold.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONTS_DIR):
         os.makedirs(FONTS_DIR, exist_ok=True)
     if not os.path.exists(FONT_PATH):
-        print("Downloading Khmer Font...")
-        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/battambang/Battambang-Bold.ttf"
+        print("Downloading Kantumruy Pro Bold Font...")
+        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/kantumruypro/KantumruyPro-Bold.ttf"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
             out_file.write(response.read())
