@@ -2,16 +2,22 @@ import os
 import re
 import json
 import random
+import subprocess
 from datetime import datetime
 import pytz
 import psycopg2
 import requests
 from flask import Flask, render_template_string
 from threading import Thread
-from weasyprint import HTML
-from pdf2image import convert_from_bytes
+from playwright.sync_api import sync_playwright
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Install Playwright Chromium Browser
+try:
+    subprocess.run(["playwright", "install", "chromium"], check=True)
+except Exception as e:
+    print("Playwright install log:", e)
 
 # --- 1. ENV & DATABASE SETUP ---
 PORT = int(os.environ.get("PORT", 8080))
@@ -181,25 +187,22 @@ def parse_order_text(text):
         print("Parse Error:", e)
         return None
 
-# --- 4. HTML INVOICE RENDERER (WEASYPRINT) ---
+# --- 4. HTML INVOICE TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="km">
 <head>
     <meta charset="UTF-8">
+    <link href="https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&display=swap');
-        @page {
-            size: A4 portrait;
-            margin: 0;
-        }
         body {
-            font-family: 'Battambang', 'Battambang Bold', sans-serif;
-            width: 700px;
+            font-family: 'Battambang', sans-serif;
+            width: 750px;
             margin: 0 auto;
             padding: 30px;
             background: #ffffff;
             color: #0f172a;
+            box-sizing: border-box;
         }
         .header-bar {
             height: 10px;
@@ -297,22 +300,22 @@ HTML_TEMPLATE = """
     <table class="top-table">
         <tr>
             <td>
-                <div class="shop-name">{{ data.shopName }}</div>
+                <div class="shop-name">{{ data['shopName'] }}</div>
                 <div class="sub-title">Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ</div>
             </td>
             <td style="vertical-align: top;">
-                <div class="inv-num">#INV-{{ data.invoiceNum }}</div>
-                <div class="inv-date">Date: {{ data.orderDate }}, {{ data.timeStr }}</div>
+                <div class="inv-num">#INV-{{ data['invoiceNum'] }}</div>
+                <div class="inv-date">Date: {{ data['orderDate'] }}, {{ data['timeStr'] }}</div>
             </td>
         </tr>
     </table>
     <hr>
     <div class="customer-info">
-        <div>ឈ្មោះអតិថិជន៖ {{ data.name }}</div>
-        <div>លេខទូរស័ព្ទ៖ {{ data.phone }}</div>
-        <div>អាសយដ្ឋាន៖ {{ data.address }}</div>
-        {% if data.mapUrl %}
-        <div class="map-url">ទីតាំង Map៖ {{ data.mapUrl }}</div>
+        <div>ឈ្មោះអតិថិជន៖ {{ data['name'] }}</div>
+        <div>លេខទូរស័ព្ទ៖ {{ data['phone'] }}</div>
+        <div>អាសយដ្ឋាន៖ {{ data['address'] }}</div>
+        {% if data['mapUrl'] %}
+        <div class="map-url">ទីតាំង Map៖ {{ data['mapUrl'] }}</div>
         {% endif %}
     </div>
 
@@ -328,14 +331,14 @@ HTML_TEMPLATE = """
             </tr>
         </thead>
         <tbody>
-            {% for item in data.items %}
+            {% for item in data['items'] %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ item.name }}</td>
-                <td class="text-center">{{ item.size }}</td>
-                <td class="text-center">{{ item.qty|int if item.qty == item.qty|int else item.qty }}</td>
-                <td class="text-right">${{ "%.2f"|format(item.price) }}</td>
-                <td class="text-right">${{ "%.2f"|format(item.total) }}</td>
+                <td>{{ item['name'] }}</td>
+                <td class="text-center">{{ item['size'] }}</td>
+                <td class="text-center">{{ item['qty'] }}</td>
+                <td class="text-right">${{ "%.2f"|format(item['price']) }}</td>
+                <td class="text-right">${{ "%.2f"|format(item['total']) }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -344,18 +347,18 @@ HTML_TEMPLATE = """
     <table class="summary-table">
         <tr>
             <td>ថ្លៃទំនិញសរុប (Subtotal):</td>
-            <td class="text-right">${{ "%.2f"|format(data.subtotal) }}</td>
+            <td class="text-right">${{ "%.2f"|format(data['subtotal']) }}</td>
         </tr>
         <tr>
             <td>ថ្លៃដឹកជញ្ជូន (Delivery Fee):</td>
-            <td class="text-right">${{ "%.2f"|format(data.deliveryFee) }}</td>
+            <td class="text-right">${{ "%.2f"|format(data['deliveryFee']) }}</td>
         </tr>
         <tr class="grand-total">
             <td>តម្លៃសរុបចុងក្រោយ:</td>
-            <td class="text-right">${{ "%.2f"|format(data.grandTotal) }}</td>
+            <td class="text-right">${{ "%.2f"|format(data['grandTotal']) }}</td>
         </tr>
         <tr>
-            <td colspan="2" class="khr-val">({{ khr_formatted }})</td>
+            <td colspan="2" class="khr-val">({{ khr_text }})</td>
         </tr>
     </table>
 
@@ -375,22 +378,21 @@ def generate_invoice_images(data, exchange_rate):
 
     full_data = {**data, 'invoiceNum': invoice_num, 'orderDate': order_date, 'timeStr': time_str}
 
-    khr_value = int(round(data['grandTotal'] * exchange_rate))
-    khr_formatted = f"៛ {khr_value:,}"
+    khr_val = int(round(data['grandTotal'] * exchange_rate))
+    khr_text = f"៛ {khr_val:,}"
 
     with app.app_context():
-        rendered_html = render_template_string(
-            HTML_TEMPLATE, 
-            data=full_data, 
-            khr_formatted=khr_formatted
-        )
+        rendered_html = render_template_string(HTML_TEMPLATE, data=full_data, khr_text=khr_text)
     
     file_path = f"Invoice_{random.randint(1000, 9999)}.jpg"
 
-    # Render HTML -> PDF -> Image directly using WeasyPrint
-    pdf_bytes = HTML(string=rendered_html).write_pdf()
-    images = convert_from_bytes(pdf_bytes, dpi=150)
-    images[0].save(file_path, 'JPEG')
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
+        page = browser.new_page(viewport={"width": 800, "height": 950})
+        page.set_content(rendered_html)
+        page.wait_for_load_state("networkidle")
+        page.screenshot(path=file_path, type="jpeg", full_page=True)
+        browser.close()
 
     return [file_path]
 
@@ -475,7 +477,7 @@ if __name__ == '__main__':
     init_db()
     fetch_live_exchange_rate()
 
-    # Start Flask Web Server in background thread
+    # Start Flask Web Server
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
