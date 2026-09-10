@@ -2,23 +2,19 @@ import os
 import re
 import json
 import random
-import subprocess
 from datetime import datetime
 import pytz
 import psycopg2
 import requests
 from flask import Flask, render_template_string
-from playwright.sync_api import sync_playwright
+from threading import Thread
+from weasyprint import HTML
+from pdf2image import convert_from_bytes
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Install Playwright Chromium Browser automatically if needed
-try:
-    subprocess.run(["playwright", "install", "chromium"], check=True)
-except Exception as e:
-    print("Playwright install error:", e)
-
 # --- 1. ENV & DATABASE SETUP ---
+PORT = int(os.environ.get("PORT", 8080))
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -116,9 +112,8 @@ app = Flask(__name__)
 def home():
     return "Invoice Bot Telegram Active!"
 
-@app.route('/form')
-def form():
-    return render_template_string("<!DOCTYPE html><html lang='km'><head><meta charset='UTF-8'><title>Invoice Bot</title></head><body style='font-family:sans-serif; text-align:center; padding-top:50px;'><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>")
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT, use_reloader=False)
 
 # --- 3. ORDER PARSER ---
 def parse_order_text(text):
@@ -186,118 +181,112 @@ def parse_order_text(text):
         print("Parse Error:", e)
         return None
 
-# --- 4. HTML/CSS INVOICE RENDERER ---
+# --- 4. HTML INVOICE RENDERER (WEASYPRINT) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="km">
 <head>
     <meta charset="UTF-8">
-    <link href="https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: 'Battambang', sans-serif;
-            width: 800px;
+        @import url('https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&display=swap');
+        @page {
+            size: A4 portrait;
             margin: 0;
-            padding: 20px 40px;
+        }
+        body {
+            font-family: 'Battambang', 'Battambang Bold', sans-serif;
+            width: 700px;
+            margin: 0 auto;
+            padding: 30px;
             background: #ffffff;
             color: #0f172a;
-            box-sizing: border-box;
         }
         .header-bar {
             height: 10px;
             background-color: #0284c7;
-            margin: -20px -40px 20px -40px;
+            margin: -30px -30px 20px -30px;
         }
-        .top-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
+        .top-table {
+            width: 100%;
+            margin-bottom: 10px;
         }
         .shop-name {
-            font-size: 28px;
+            font-size: 26px;
             font-weight: bold;
             color: #000;
             text-transform: uppercase;
         }
         .sub-title {
-            font-size: 15px;
+            font-size: 14px;
             font-weight: bold;
             color: #1e293b;
         }
         .inv-num {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: bold;
             color: #0284c7;
             text-align: right;
         }
         .inv-date {
-            font-size: 14px;
+            font-size: 13px;
             font-weight: bold;
             text-align: right;
         }
         hr {
             border: 0;
             border-top: 2px solid #94a3b8;
-            margin: 15px 0;
+            margin: 10px 0 15px 0;
         }
         .customer-info {
-            font-size: 16px;
+            font-size: 15px;
             font-weight: bold;
             line-height: 1.8;
+            margin-bottom: 15px;
         }
-        .map-url {
-            color: #0284c7;
-        }
-        table {
+        .map-url { color: #0284c7; }
+        .items-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 15px;
         }
-        th {
+        .items-table th {
             background-color: #e2e8f0;
             color: #000;
-            font-size: 15px;
+            font-size: 14px;
             font-weight: bold;
-            padding: 10px;
+            padding: 8px;
             text-align: left;
         }
-        td {
-            padding: 12px 10px;
+        .items-table td {
+            padding: 10px 8px;
             border-bottom: 1px solid #cbd5e1;
-            font-size: 15px;
+            font-size: 14px;
             font-weight: bold;
         }
         .text-center { text-align: center; }
         .text-right { text-align: right; }
-        .summary-box {
-            margin-top: 15px;
+        .summary-table {
+            width: 320px;
             float: right;
-            width: 350px;
-            font-size: 16px;
+            margin-top: 15px;
+            font-size: 15px;
             font-weight: bold;
             line-height: 1.8;
         }
-        .summary-row {
-            display: flex;
-            justify-content: space-between;
-        }
         .grand-total {
             border-top: 2px solid #64748b;
-            padding-top: 8px;
-            margin-top: 8px;
-            font-size: 20px;
+            font-size: 18px;
             color: #0284c7;
         }
         .khr-val {
-            font-size: 17px;
+            font-size: 16px;
             color: #000;
             text-align: right;
         }
         .footer {
             clear: both;
             text-align: center;
-            padding-top: 30px;
-            font-size: 15px;
+            padding-top: 40px;
+            font-size: 14px;
             font-weight: bold;
             color: #475569;
         }
@@ -305,16 +294,18 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="header-bar"></div>
-    <div class="top-row">
-        <div>
-            <div class="shop-name">{{ data.shopName }}</div>
-            <div class="sub-title">Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ</div>
-        </div>
-        <div>
-            <div class="inv-num">#INV-{{ data.invoiceNum }}</div>
-            <div class="inv-date">Date: {{ data.orderDate }}, {{ data.timeStr }}</div>
-        </div>
-    </div>
+    <table class="top-table">
+        <tr>
+            <td>
+                <div class="shop-name">{{ data.shopName }}</div>
+                <div class="sub-title">Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ</div>
+            </td>
+            <td style="vertical-align: top;">
+                <div class="inv-num">#INV-{{ data.invoiceNum }}</div>
+                <div class="inv-date">Date: {{ data.orderDate }}, {{ data.timeStr }}</div>
+            </td>
+        </tr>
+    </table>
     <hr>
     <div class="customer-info">
         <div>ឈ្មោះអតិថិជន៖ {{ data.name }}</div>
@@ -325,15 +316,15 @@ HTML_TEMPLATE = """
         {% endif %}
     </div>
 
-    <table>
+    <table class="items-table">
         <thead>
             <tr>
-                <th style="width: 5%;">No.</th>
-                <th style="width: 45%;">ទំនិញ / Details</th>
-                <th style="width: 15%;" class="text-center">ទំហំ</th>
+                <th style="width: 6%;">No.</th>
+                <th style="width: 44%;">ទំនិញ / Details</th>
+                <th style="width: 12%;" class="text-center">ទំហំ</th>
                 <th style="width: 10%;" class="text-center">ចំនួន</th>
-                <th style="width: 12%;" class="text-right">តម្លៃ/ឯកតា</th>
-                <th style="width: 13%;" class="text-right">សរុប</th>
+                <th style="width: 14%;" class="text-right">តម្លៃ/ឯកតា</th>
+                <th style="width: 14%;" class="text-right">សរុប</th>
             </tr>
         </thead>
         <tbody>
@@ -342,7 +333,7 @@ HTML_TEMPLATE = """
                 <td>{{ loop.index }}</td>
                 <td>{{ item.name }}</td>
                 <td class="text-center">{{ item.size }}</td>
-                <td class="text-center">{{ item.qty|int if item.qty.is_integer() else item.qty }}</td>
+                <td class="text-center">{{ item.qty|int if item.qty == item.qty|int else item.qty }}</td>
                 <td class="text-right">${{ "%.2f"|format(item.price) }}</td>
                 <td class="text-right">${{ "%.2f"|format(item.total) }}</td>
             </tr>
@@ -350,21 +341,23 @@ HTML_TEMPLATE = """
         </tbody>
     </table>
 
-    <div class="summary-box">
-        <div class="summary-row">
-            <span>ថ្លៃទំនិញសរុប (Subtotal):</span>
-            <span>${{ "%.2f"|format(data.subtotal) }}</span>
-        </div>
-        <div class="summary-row">
-            <span>ថ្លៃដឹកជញ្ជូន (Delivery Fee):</span>
-            <span>${{ "%.2f"|format(data.deliveryFee) }}</span>
-        </div>
-        <div class="summary-row grand-total">
-            <span>តម្លៃសរុបចុងក្រោយ (Grand Total):</span>
-            <span>${{ "%.2f"|format(data.grandTotal) }}</span>
-        </div>
-        <div class="khr-val">(៛ {{ khr_formatted }})</div>
-    </div>
+    <table class="summary-table">
+        <tr>
+            <td>ថ្លៃទំនិញសរុប (Subtotal):</td>
+            <td class="text-right">${{ "%.2f"|format(data.subtotal) }}</td>
+        </tr>
+        <tr>
+            <td>ថ្លៃដឹកជញ្ជូន (Delivery Fee):</td>
+            <td class="text-right">${{ "%.2f"|format(data.deliveryFee) }}</td>
+        </tr>
+        <tr class="grand-total">
+            <td>តម្លៃសរុបចុងក្រោយ:</td>
+            <td class="text-right">${{ "%.2f"|format(data.grandTotal) }}</td>
+        </tr>
+        <tr>
+            <td colspan="2" class="khr-val">({{ khr_formatted }})</td>
+        </tr>
+    </table>
 
     <div class="footer">
         សូមអរគុណសម្រាប់ការបញ្ជាទិញ!
@@ -382,9 +375,8 @@ def generate_invoice_images(data, exchange_rate):
 
     full_data = {**data, 'invoiceNum': invoice_num, 'orderDate': order_date, 'timeStr': time_str}
 
-    # Pre-calculate KHR value in Python to avoid Jinja filter issues
     khr_value = int(round(data['grandTotal'] * exchange_rate))
-    khr_formatted = f"{khr_value:,}"
+    khr_formatted = f"៛ {khr_value:,}"
 
     with app.app_context():
         rendered_html = render_template_string(
@@ -395,13 +387,10 @@ def generate_invoice_images(data, exchange_rate):
     
     file_path = f"Invoice_{random.randint(1000, 9999)}.jpg"
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-        page = browser.new_page(viewport={"width": 800, "height": 1000})
-        page.set_content(rendered_html)
-        page.wait_for_load_state("networkidle")
-        page.screenshot(path=file_path, type="jpeg", full_page=True)
-        browser.close()
+    # Render HTML -> PDF -> Image directly using WeasyPrint
+    pdf_bytes = HTML(string=rendered_html).write_pdf()
+    images = convert_from_bytes(pdf_bytes, dpi=150)
+    images[0].save(file_path, 'JPEG')
 
     return [file_path]
 
@@ -485,6 +474,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     init_db()
     fetch_live_exchange_rate()
+
+    # Start Flask Web Server in background thread
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
     if not BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN is missing!")
