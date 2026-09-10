@@ -363,7 +363,7 @@ HTML_TEMPLATE = """
             <span>តម្លៃសរុបចុងក្រោយ (Grand Total):</span>
             <span>${{ "%.2f"|format(data.grandTotal) }}</span>
         </div>
-        <div class="khr-val">(៛ {{ "{:,}".format((data.grandTotal * exchange_rate)|round|int) }})</div>
+        <div class="khr-val">(៛ {{ khr_formatted }})</div>
     </div>
 
     <div class="footer">
@@ -382,9 +382,16 @@ def generate_invoice_images(data, exchange_rate):
 
     full_data = {**data, 'invoiceNum': invoice_num, 'orderDate': order_date, 'timeStr': time_str}
 
-    # Use Flask app_context to prevent "Working outside of application context" error
+    # Pre-calculate KHR value in Python to avoid Jinja filter issues
+    khr_value = int(round(data['grandTotal'] * exchange_rate))
+    khr_formatted = f"{khr_value:,}"
+
     with app.app_context():
-        rendered_html = render_template_string(HTML_TEMPLATE, data=full_data, exchange_rate=exchange_rate)
+        rendered_html = render_template_string(
+            HTML_TEMPLATE, 
+            data=full_data, 
+            khr_formatted=khr_formatted
+        )
     
     file_path = f"Invoice_{random.randint(1000, 9999)}.jpg"
 
