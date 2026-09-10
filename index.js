@@ -69,7 +69,8 @@ let memoryDB = {
     defaultDeliveryFee: null 
   },
   allowedUsers: {},
-  pendingRequests: {} // { chatId: [userId1, userId2, ...] }
+  pendingRequests: {}, // { chatId: [userId1, userId2] }
+  groupTitles: {}      // { "oneday clothing® - cambodia": chatId }
 };
 
 if (fs.existsSync(dbFile)) {
@@ -78,6 +79,7 @@ if (fs.existsSync(dbFile)) {
     if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
     if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
     if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
+    if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
   } catch (e) {
     console.error("Error reading dbFile:", e);
   }
@@ -98,6 +100,7 @@ async function initDB() {
         if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
         if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
         if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
+        if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
         console.log("Database restored successfully from PostgreSQL!");
       } else {
         await pool.query(`INSERT INTO system_store (id, data) VALUES (1, $1);`, [JSON.stringify(memoryDB)]);
@@ -153,7 +156,7 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
-      { command: 'all', description: 'Approve រាល់ Join Requests ទាំងអស់' },
+      { command: 'all', description: 'Approve រាល់ Join Requests តាមឈ្មោះ Group' },
       { command: 'ratebank', description: 'កំណត់ Rate តាមធនាគារ (Live)' },
       { command: 'rate4050', description: 'កំណត់ Rate ថេរ (ឧទាហរណ៍ 4050)' },
       { command: 'deliveryfree', description: 'កំណត់ថ្លៃដឹក Free ($0)' },
@@ -165,10 +168,11 @@ async function setupCommandsMenu() {
   }
 }
 
-// --- 4. RECORD JOIN REQUESTS ---
+// --- 4. RECORD JOIN REQUESTS & GROUP TITLES ---
 bot.on('chat_join_request', async (ctx) => {
   try {
     const chatId = ctx.chatJoinRequest.chat.id.toString();
+    const chatTitle = ctx.chatJoinRequest.chat.title || "";
     const userId = ctx.chatJoinRequest.from.id;
 
     const db = getDatabase();
@@ -176,73 +180,100 @@ bot.on('chat_join_request', async (ctx) => {
       db.pendingRequests[chatId] = [];
     }
 
-    // ការពារកុំឱ្យរក្សាទុក Duplicate ID
+    if (chatTitle) {
+      db.groupTitles[chatTitle.toLowerCase().trim()] = chatId;
+    }
+
     if (!db.pendingRequests[chatId].includes(userId)) {
       db.pendingRequests[chatId].push(userId);
       await saveDatabase(db);
-      console.log(`Saved join request for User ${userId} in Chat ${chatId}`);
+      console.log(`Saved join request for User ${userId} in ${chatTitle} (${chatId})`);
     }
   } catch (err) {
     console.error("Error saving chat_join_request:", err.message);
   }
 });
 
-// --- 5. /ALL COMMAND TO ACCEPT ALL PENDING REQUESTS ---
-bot.command('all', async (ctx) => {
-  const chatId = ctx.chat.id.toString();
+// --- 5. /ALL COMMAND HANDLER (PRIVATE CHAT & GROUP) ---
+bot.use(async (ctx, next) => {
+  if (!ctx.message || !ctx.message.text) return next();
+  const text = ctx.message.text.trim();
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
   const db = getDatabase();
 
-  // ឆែកមើល Admin សិទ្ធិ
-  const isAdminEnv = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
-  let isGroupAdmin = false;
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-    try {
-      const member = await ctx.getChatMember(ctx.from.id);
-      isGroupAdmin = ['administrator', 'creator'].includes(member.status);
-    } catch (e) {}
-  }
+  // ឆែកមើល Command ទម្រង់ /all...
+  if (text.toLowerCase().startsWith('/all')) {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /all នេះទេ!");
 
-  if (!isAdminEnv && !isGroupAdmin) {
-    return ctx.reply("❌ មានតែ Admin ទេដែលមានសិទ្ធិប្រើប្រាស់ Command /all នេះ!");
-  }
+    let targetChatId = null;
+    let targetTitle = "";
 
-  const requests = db.pendingRequests[chatId] || [];
+    const groupNameInput = text.substring(4).trim(); // កាត់យកឈ្មោះគ្រុបបន្ទាប់ពី /all
 
-  if (requests.length === 0) {
-    return ctx.reply("ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំឡើយ!");
-  }
+    if (groupNameInput) {
+      // បើវាយឈ្មោះ Group ពីក្រោយ /all (ឧទាហរណ៍ /allOneDay Clothing® - Cambodia)
+      const cleanKey = groupNameInput.toLowerCase();
+      targetChatId = db.groupTitles[cleanKey];
+      targetTitle = groupNameInput;
 
-  const statusMsg = await ctx.reply(`⏳ កំពុងចាប់ផ្តើម Approve សមាជិកចំនួន ${requests.length} នាក់...`);
-
-  let approvedCount = 0;
-  let failedCount = 0;
-  const remainingRequests = [];
-
-  for (const userId of requests) {
-    try {
-      await ctx.telegram.approveChatJoinRequest(chatId, userId);
-      approvedCount++;
-      // បន្ថែម delay 100ms ដើម្បីការពារ Telegram Rate Limit
-      await new Promise(resolve => setTimeout(resolve, 100));
-    } catch (err) {
-      console.error(`Failed to approve ${userId}:`, err.message);
-      failedCount++;
+      // បើស្កេនរកតាមឈ្មោះមិនឃើញ ព្យាយាមរកមើលឈ្មោះដែលប្រហាក់ប្រហែល
+      if (!targetChatId) {
+        for (const [title, id] of Object.entries(db.groupTitles)) {
+          if (title.includes(cleanKey) || cleanKey.includes(title)) {
+            targetChatId = id;
+            targetTitle = title;
+            break;
+          }
+        }
+      }
+    } else if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
+      // បើវាយ /all ទទេ។ នៅក្នុង Group ផ្ទាល់
+      targetChatId = ctx.chat.id.toString();
+      targetTitle = ctx.chat.title;
     }
+
+    if (!targetChatId) {
+      return ctx.reply("❌ មិនអាចស្វែងរក Group នេះឃើញទេ! សូមប្រាកដថាបានវាយឈ្មោះ Group ត្រឹមត្រូវ ឬមានអ្នក Join Request ថ្មីៗចូល Group នោះ។");
+    }
+
+    const requests = db.pendingRequests[targetChatId] || [];
+
+    if (requests.length === 0) {
+      return ctx.reply(`ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំក្នុង Group "${targetTitle}" ឡើយ!`);
+    }
+
+    const statusMsg = await ctx.reply(`⏳ កំពុងចាប់ផ្តើម Approve សមាជិកចំនួន ${requests.length} នាក់ ក្នុង Group "${targetTitle}"...`);
+
+    let approvedCount = 0;
+    let failedCount = 0;
+
+    for (const userId of requests) {
+      try {
+        await ctx.telegram.approveChatJoinRequest(targetChatId, userId);
+        approvedCount++;
+        await new Promise(resolve => setTimeout(resolve, 100)); // Delay ការពារ Rate limit
+      } catch (err) {
+        console.error(`Failed to approve ${userId}:`, err.message);
+        failedCount++;
+      }
+    }
+
+    db.pendingRequests[targetChatId] = [];
+    await saveDatabase(db);
+
+    // ផ្ញើសាររាយការណ៍ប្រាប់តែនៅក្នុង Private Chat របស់អ្នកប៉ុណ្ណោះ (មិនលោតសារក្នុង Group ទេ)
+    return ctx.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      null,
+      `✅ **ដំណើរការជោគជ័យ!**\n\n📌 **Group:** ${targetTitle}\n🎉 បាន Approve ចូល Group: **${approvedCount} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
+      { parse_mode: 'Markdown' }
+    );
   }
 
-  // សម្អាតបញ្ជីដែលបាន Approve រួចរាល់
-  db.pendingRequests[chatId] = [];
-  await saveDatabase(db);
-
-  return ctx.telegram.editMessageText(
-    chatId,
-    statusMsg.message_id,
-    null,
-    `✅ **ដំណើរការជោគជ័យ!**\n\n🎉 បាន Approve ចូល Group: **${approvedCount} នាក់**\n❌ បរាជ័យ (អាចគេ Cancel វិញ): **${failedCount} នាក់**`,
-    { parse_mode: 'Markdown' }
-  );
+  return next();
 });
 
 // --- 6. START COMMAND HANDLER ---
@@ -386,7 +417,7 @@ function parseOrderText(text) {
       let line = lines[i];
 
       if (line.includes('— Order') || line.includes('– Order')) {
-        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
       }
 
       if (line.includes('ឈ្មោះ:')) {
@@ -772,7 +803,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, Khmer Font, and Auto-Accept Join Requests started!");
+  console.log("Bot, Database, and Private Chat /all Command active!");
 }
 
 startApp();
