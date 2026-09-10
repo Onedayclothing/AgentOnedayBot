@@ -4,5 +4,4 @@ requests
 Flask
 gunicorn
 pytz
-weasyprint
-pdf2image
+playwright
