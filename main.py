@@ -6,26 +6,12 @@ import threading
 from datetime import datetime
 import zoneinfo
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
-# --- 1. HEALTH CHECK SERVER FOR RENDER ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot Service Active!")
-
-def run_health_check():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
-
-threading.Thread(target=run_health_check, daemon=True).start()
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+# --- 1. GET TELEGRAM TOKEN ---
+TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
 
 # --- GLOBAL EXCHANGE RATE CONFIG ---
@@ -407,20 +393,17 @@ async def filter_links_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- 7. MAIN FUNCTION ---
 def main():
     if not TELEGRAM_TOKEN:
-        print("Error: TELEGRAM_TOKEN not set.")
+        print("Error: BOT_TOKEN, TELEGRAM_TOKEN, or TELEGRAM_BOT_TOKEN not set.")
         return
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.StatusUpdate.ALL, delete_system_message))
-    
-    # ប្រើ Regex ត្រឹមត្រូវសម្រាប់ Python 3.11+
     app.add_handler(MessageHandler(filters.Regex(re.compile(r'^/rate.*$', re.IGNORECASE)), set_rate_command), group=0)
-    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_invoice_handler), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_links_handler), group=2)
 
-    print("Bot AgentOneday is running with Exchange Rate Tool...")
+    print("Bot AgentOneday is running on Railway...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
