@@ -10,9 +10,6 @@ from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
-# Import UHarfBuzz សម្រាប់ Shaping Khmer Font
-import uharfbuzz as hb
-
 # --- 1. GET TELEGRAM TOKEN ---
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[^\s]*)?)'
@@ -53,65 +50,16 @@ def setup_khmer_font():
 
 setup_khmer_font()
 
-# Cache Font Face សម្រាប់ HarfBuzz
-hb_blob = hb.Blob.from_file_path(FONT_PATH)
-hb_face = hb.Face(hb_blob)
-hb_font = hb.Font(hb_face)
-
-# --- KHMER TEXT SHAPING FUNCTION ---
-def render_khmer_text(draw, position, text, font, font_size, fill="#000000", anchor=None):
+# --- HELPER FUNCTION FOR KHMER TEXT DRAWING ---
+def draw_khmer_text(draw, xy, text, font, fill="#000000", anchor=None):
     """
-    Function សម្រាប់ Draw Khmer Text ជាមួយ HarfBuzz លើ Pillow ImageDraw
+    បើកប្រើ layout_engine=ImageFont.Layout.RAQM ដើម្បីឱ្យ Pillow រៀបជើង និងស្រះអក្សរខ្មែរបានត្រឹមត្រូវ
     """
-    if not text:
-        return (0, 0)
-
-    # 1. Shape Text ជាមួយ HarfBuzz
-    buf = hb.Buffer()
-    buf.add_str(text)
-    buf.guess_segment_properties()
-    hb.shape(hb_font, buf)
-
-    infos = buf.glyph_infos
-    positions = buf.glyph_positions
-
-    # 2. រកទំហំ Width និង Height Text
-    scale = font_size / hb_face.upem
-    total_width = sum([pos.x_advance for pos in positions]) * scale
-    
-    # Font Metrics
-    ascent, descent = font.getmetrics()
-    total_height = ascent + descent
-
-    x, y = position
-
-    # Handle Alignment (Anchor)
-    if anchor == "ra": # Right Align
-        x -= total_width
-    elif anchor == "mm": # Center Align
-        x -= (total_width / 2)
-
-    # 3. គូរ Glyphs នីមួយៗលើ Image
-    curr_x = x
-    curr_y = y
-
-    for info, pos in zip(infos, positions):
-        gid = info.codepoint
-        x_off = pos.x_offset * scale
-        y_off = pos.y_offset * scale
-        x_adv = pos.x_advance * scale
-        y_adv = pos.y_advance * scale
-
-        # បំបែក Glyph ID ទៅជា Character Glyph របស់ Pillow Font
-        glyph_char = chr(font.getfont(text).getembd().get_glyph_index(gid)) if hasattr(font, 'getfont') else font.getname()
-        
-        # Draw Glyph នីមួយៗទៅតាម Position ដែល HarfBuzz បានរៀប
-        draw.text((curr_x + x_off, curr_y - y_off), chr(0x10000 + gid) if gid > 0 else "", font=font, fill=fill)
-        
-        curr_x += x_adv
-        curr_y -= y_adv
-
-    return (total_width, total_height)
+    try:
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        # Fallback ប្រសិនបើ Server គ្មាន libraqm
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor)
 
 # --- 3. HELPER: TEXT WRAPPER ---
 def wrap_text_max2(text, font, max_width, draw):
@@ -121,7 +69,11 @@ def wrap_text_max2(text, font, max_width, draw):
     
     for word in words:
         test_line = ' '.join(current_line + [word])
-        bbox = draw.textbbox((0, 0), test_line, font=font)
+        try:
+            bbox = draw.textbbox((0, 0), test_line, font=font, layout_engine=ImageFont.Layout.RAQM)
+        except Exception:
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            
         line_width = bbox[2] - bbox[0]
         
         if line_width <= max_width:
@@ -249,40 +201,40 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
     draw.rectangle([(0, 0), (width, int(16 * S))], fill="#0284c7")
 
     # Header
-    draw.text((int(40 * S), int(45 * S)), data["shopName"].upper(), font=font_large, fill="#000000")
-    draw.text((int(40 * S), int(95 * S)), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#0f172a")
+    draw_khmer_text(draw, (int(40 * S), int(45 * S)), data["shopName"].upper(), font=font_large, fill="#000000")
+    draw_khmer_text(draw, (int(40 * S), int(95 * S)), "Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ", font=font_normal, fill="#0f172a")
 
     page_str = f" (Page {page_num}/{total_pages})" if total_pages > 1 else ""
     inv_num = f"#INV-{data['inv_num']}{page_str}"
     
-    draw.text((int(810 * S), int(45 * S)), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
-    draw.text((int(810 * S), int(90 * S)), f"Date: {data['date_str']}", font=font_normal, fill="#000000", anchor="ra")
+    draw_khmer_text(draw, (int(810 * S), int(45 * S)), inv_num, font=font_medium, fill="#0284c7", anchor="ra")
+    draw_khmer_text(draw, (int(810 * S), int(90 * S)), f"Date: {data['date_str']}", font=font_normal, fill="#000000", anchor="ra")
 
     draw.line([(int(40 * S), int(135 * S)), (int(810 * S), int(135 * S))], fill="#64748b", width=int(2 * S))
 
     y = int(155 * S)
     if is_first_page:
-        draw.text((int(40 * S), y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(40 * S), y), f"ឈ្មោះអតិថិជន៖ {data['name']}", font=font_medium, fill="#000000")
         y += int(38 * S)
-        draw.text((int(40 * S), y), f"លេខទូរស័ព្ទ៖ {data['phone']}", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(40 * S), y), f"លេខទូរស័ព្ទ៖ {data['phone']}", font=font_medium, fill="#000000")
         y += int(38 * S)
-        draw.text((int(40 * S), y), f"អាសយដ្ឋាន៖ {data['address']}", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(40 * S), y), f"អាសយដ្ឋាន៖ {data['address']}", font=font_medium, fill="#000000")
         y += int(38 * S)
 
         if data["mapUrl"]:
-            draw.text((int(40 * S), y), f"ទីតាំង Map៖ {data['mapUrl']}", font=font_medium, fill="#0284c7")
+            draw_khmer_text(draw, (int(40 * S), y), f"ទីតាំង Map៖ {data['mapUrl']}", font=font_medium, fill="#0284c7")
             y += int(45 * S)
         else:
             y += int(10 * S)
 
     # Table Header Frame
     draw.rectangle([(int(40 * S), y), (int(810 * S), y + int(46 * S))], fill="#e2e8f0")
-    draw.text((int(55 * S), y + int(10 * S)), "No.", font=font_medium, fill="#000000")
-    draw.text((int(115 * S), y + int(10 * S)), "ទំនិញ / Details", font=font_medium, fill="#000000")
-    draw.text((int(420 * S), y + int(10 * S)), "ទំហំ", font=font_medium, fill="#000000")
-    draw.text((int(490 * S), y + int(10 * S)), "ចំនួន", font=font_medium, fill="#000000")
-    draw.text((int(570 * S), y + int(10 * S)), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
-    draw.text((int(795 * S), y + int(10 * S)), "សរុប", font=font_medium, fill="#000000", anchor="ra")
+    draw_khmer_text(draw, (int(55 * S), y + int(10 * S)), "No.", font=font_medium, fill="#000000")
+    draw_khmer_text(draw, (int(115 * S), y + int(10 * S)), "ទំនិញ / Details", font=font_medium, fill="#000000")
+    draw_khmer_text(draw, (int(420 * S), y + int(10 * S)), "ទំហំ", font=font_medium, fill="#000000")
+    draw_khmer_text(draw, (int(490 * S), y + int(10 * S)), "ចំនួន", font=font_medium, fill="#000000")
+    draw_khmer_text(draw, (int(570 * S), y + int(10 * S)), "តម្លៃ/ឯកតា", font=font_medium, fill="#000000")
+    draw_khmer_text(draw, (int(795 * S), y + int(10 * S)), "សរុប", font=font_medium, fill="#000000", anchor="ra")
 
     y += int(58 * S)
 
@@ -290,17 +242,17 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
     for idx, (item, name_lines) in enumerate(zip(page_items, item_wrapped_lines), start=start_idx):
         row_h = max(len(name_lines) * int(30 * S), int(42 * S)) + int(20 * S)
         
-        draw.text((int(55 * S), y), str(idx), font=font_normal, fill="#000000")
+        draw_khmer_text(draw, (int(55 * S), y), str(idx), font=font_normal, fill="#000000")
 
         line_y = y
         for line in name_lines:
-            draw.text((int(115 * S), line_y), line, font=font_normal, fill="#000000")
+            draw_khmer_text(draw, (int(115 * S), line_y), line, font=font_normal, fill="#000000")
             line_y += int(30 * S)
 
-        draw.text((int(420 * S), y), item["size"], font=font_normal, fill="#000000")
-        draw.text((int(490 * S), y), str(int(item["qty"])), font=font_normal, fill="#000000")
-        draw.text((int(570 * S), y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
-        draw.text((int(795 * S), y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
+        draw_khmer_text(draw, (int(420 * S), y), item["size"], font=font_normal, fill="#000000")
+        draw_khmer_text(draw, (int(490 * S), y), str(int(item["qty"])), font=font_normal, fill="#000000")
+        draw_khmer_text(draw, (int(570 * S), y), f"${item['price']:.2f}", font=font_normal, fill="#000000")
+        draw_khmer_text(draw, (int(795 * S), y), f"${item['total']:.2f}", font=font_normal, fill="#000000", anchor="ra")
 
         y += row_h
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#e2e8f0", width=int(1.5 * S))
@@ -312,26 +264,26 @@ def render_single_page(data, page_items, start_idx, page_num, total_pages, excha
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
         y += int(30 * S)
 
-        draw.text((int(40 * S), y), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#000000")
-        draw.text((int(795 * S), y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+        draw_khmer_text(draw, (int(40 * S), y), "ថ្លៃទំនិញសរុប (Subtotal):", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(795 * S), y), f"${data['subtotal']:.2f}", font=font_medium, fill="#000000", anchor="ra")
         y += int(35 * S)
 
-        draw.text((int(40 * S), y), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#000000")
-        draw.text((int(795 * S), y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
+        draw_khmer_text(draw, (int(40 * S), y), "ថ្លៃដឹកជញ្ជូន (Delivery Fee):", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(795 * S), y), f"${data['deliveryFee']:.2f}", font=font_medium, fill="#000000", anchor="ra")
         y += int(40 * S)
 
         draw.line([(int(40 * S), y), (int(810 * S), y)], fill="#64748b", width=int(2 * S))
         y += int(35 * S)
 
         khr_val = f"៛ {int(round(data['grandTotal'] * exchange_rate)):,}"
-        draw.text((int(40 * S), y), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
-        draw.text((int(795 * S), y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
+        draw_khmer_text(draw, (int(40 * S), y), "តម្លៃសរុបចុងក្រោយ (Grand Total):", font=font_medium, fill="#000000")
+        draw_khmer_text(draw, (int(795 * S), y), f"${data['grandTotal']:.2f}", font=font_large, fill="#0284c7", anchor="ra")
         y += int(40 * S)
-        draw.text((int(795 * S), y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
+        draw_khmer_text(draw, (int(795 * S), y), f"({khr_val})", font=font_medium, fill="#000000", anchor="ra")
         y += int(30 * S)
 
     # Footer
-    draw.text((int(width / 2), int(height - (30 * S))), "!", font=font_medium, fill="#475569", anchor="mm")
+    draw_khmer_text(draw, (int(width / 2), int(height - (30 * S))), "!", font=font_medium, fill="#475569", anchor="mm")
 
     output_path = f"Invoice_{page_num}_{int(datetime.now().timestamp())}.jpg"
     img.save(output_path, "JPEG", quality=100, dpi=(300, 300))
