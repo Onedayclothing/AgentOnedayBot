@@ -69,8 +69,8 @@ let memoryDB = {
     defaultDeliveryFee: null 
   },
   allowedUsers: {},
-  pendingRequests: {}, // { chatId: [userId1, userId2] }
-  groupTitles: {}      // { "oneday clothing® - cambodia": chatId }
+  pendingRequests: {},
+  groupTitles: {}
 };
 
 if (fs.existsSync(dbFile)) {
@@ -187,14 +187,13 @@ bot.on('chat_join_request', async (ctx) => {
     if (!db.pendingRequests[chatId].includes(userId)) {
       db.pendingRequests[chatId].push(userId);
       await saveDatabase(db);
-      console.log(`Saved join request for User ${userId} in ${chatTitle} (${chatId})`);
     }
   } catch (err) {
     console.error("Error saving chat_join_request:", err.message);
   }
 });
 
-// --- 5. /ALL COMMAND HANDLER (PRIVATE CHAT & GROUP) ---
+// --- 5. HIGH-SECURITY ANTI-SPAM /ALL COMMAND ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -203,22 +202,18 @@ bot.use(async (ctx, next) => {
 
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  // ឆែកមើល Command ទម្រង់ /all...
   if (text.toLowerCase().startsWith('/all')) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /all នេះទេ!");
 
     let targetChatId = null;
     let targetTitle = "";
-
-    const groupNameInput = text.substring(4).trim(); // កាត់យកឈ្មោះគ្រុបបន្ទាប់ពី /all
+    const groupNameInput = text.substring(4).trim();
 
     if (groupNameInput) {
-      // បើវាយឈ្មោះ Group ពីក្រោយ /all (ឧទាហរណ៍ /allOneDay Clothing® - Cambodia)
       const cleanKey = groupNameInput.toLowerCase();
       targetChatId = db.groupTitles[cleanKey];
       targetTitle = groupNameInput;
 
-      // បើស្កេនរកតាមឈ្មោះមិនឃើញ ព្យាយាមរកមើលឈ្មោះដែលប្រហាក់ប្រហែល
       if (!targetChatId) {
         for (const [title, id] of Object.entries(db.groupTitles)) {
           if (title.includes(cleanKey) || cleanKey.includes(title)) {
@@ -229,46 +224,66 @@ bot.use(async (ctx, next) => {
         }
       }
     } else if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-      // បើវាយ /all ទទេ។ នៅក្នុង Group ផ្ទាល់
       targetChatId = ctx.chat.id.toString();
       targetTitle = ctx.chat.title;
     }
 
     if (!targetChatId) {
-      return ctx.reply("❌ មិនអាចស្វែងរក Group នេះឃើញទេ! សូមប្រាកដថាបានវាយឈ្មោះ Group ត្រឹមត្រូវ ឬមានអ្នក Join Request ថ្មីៗចូល Group នោះ។");
+      return ctx.reply("❌ មិនអាចស្វែងរក Group នេះឃើញទេ! សូមប្រាកដថាបានវាយឈ្មោះ Group ត្រឹមត្រូវ។");
     }
 
     const requests = db.pendingRequests[targetChatId] || [];
+    const totalRequests = requests.length;
 
-    if (requests.length === 0) {
+    if (totalRequests === 0) {
       return ctx.reply(`ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំក្នុង Group "${targetTitle}" ឡើយ!`);
     }
 
-    const statusMsg = await ctx.reply(`⏳ កំពុងចាប់ផ្តើម Approve សមាជិកចំនួន ${requests.length} នាក់ ក្នុង Group "${targetTitle}"...`);
+    const statusMsg = await ctx.reply(`🛡️ **ចាប់ផ្តើមដំណើរការប្រព័ន្ធសុវត្ថិភាព Anti-Spam...**\n\nកំពុង Approve សមាជិកចំនួន **${totalRequests.toLocaleString()} នាក់** ក្នុង Group "${targetTitle}" (អាចចំណាយពេល ២០-២៥ នាទី ដើម្បីការពារ Bot ចាញ់ Block)`);
 
     let approvedCount = 0;
     let failedCount = 0;
+    const batchSize = 50; // សម្រាកធំរៀងរាល់ ៥០ នាក់ម្ដង
 
-    for (const userId of requests) {
+    for (let i = 0; i < totalRequests; i++) {
+      const userId = requests[i];
       try {
         await ctx.telegram.approveChatJoinRequest(targetChatId, userId);
         approvedCount++;
-        await new Promise(resolve => setTimeout(resolve, 100)); // Delay ការពារ Rate limit
       } catch (err) {
-        console.error(`Failed to approve ${userId}:`, err.message);
         failedCount++;
+        // បើជួប Telegram Rate Limit (Error 429) ឱ្យ Bot ផ្អាកសម្រាក ៣០ វិនាទី
+        if (err.message && err.message.includes('429')) {
+          console.log("Telegram Rate Limit Hit! Pausing 30 seconds for safety...");
+          await new Promise(r => setTimeout(r, 30000));
+        }
+      }
+
+      // Delay ២០០ មីលីវិនាទីរវាងមនុស្សម្នាក់ៗ (ការពារ Telegram Spam Filter)
+      await new Promise(r => setTimeout(r, 200));
+
+      // រាល់ពេលគ្រប់ ៥០ នាក់ សម្រាក ១០ វិនាទីពេញ និង Update ព័ត៌មានប្រាប់ Admin
+      if ((i + 1) % batchSize === 0 || i === totalRequests - 1) {
+        try {
+          await ctx.telegram.editMessageText(
+            ctx.chat.id,
+            statusMsg.message_id,
+            null,
+            `⏳ **កំពុងរត់ក្នុងទម្រង់ Safe Anti-Spam Mode...**\n\n📌 **Group:** ${targetTitle}\n✅ ជោគជ័យ: **${approvedCount.toLocaleString()} / ${totalRequests.toLocaleString()}** នាក់\n❌ បរាជ័យ: **${failedCount}** នាក់\n☕ *សម្រាក ១០ វិនាទី ការពារ Telegram Spam...*`
+          );
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 10000)); // សម្រាក ១០ វិនាទី
       }
     }
 
     db.pendingRequests[targetChatId] = [];
     await saveDatabase(db);
 
-    // ផ្ញើសាររាយការណ៍ប្រាប់តែនៅក្នុង Private Chat របស់អ្នកប៉ុណ្ណោះ (មិនលោតសារក្នុង Group ទេ)
     return ctx.telegram.editMessageText(
       ctx.chat.id,
       statusMsg.message_id,
       null,
-      `✅ **ដំណើរការជោគជ័យ!**\n\n📌 **Group:** ${targetTitle}\n🎉 បាន Approve ចូល Group: **${approvedCount} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
+      `🎉 **បញ្ចប់ដំណើរការដោយជោគជ័យ និងសុវត្ថិភាព ១០០%!**\n\n📌 **Group:** ${targetTitle}\n✅ បាន Approve សរុប: **${approvedCount.toLocaleString()} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -417,7 +432,7 @@ function parseOrderText(text) {
       let line = lines[i];
 
       if (line.includes('— Order') || line.includes('– Order')) {
-        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
       }
 
       if (line.includes('ឈ្មោះ:')) {
@@ -803,7 +818,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, and Private Chat /all Command active!");
+  console.log("Bot, Database, and Ultra Safe Anti-Spam Mode Active!");
 }
 
 startApp();
