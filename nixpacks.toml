@@ -1,2 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodePackages.npm", "nodejs_18", "pixman", "cairo", "pango"]
