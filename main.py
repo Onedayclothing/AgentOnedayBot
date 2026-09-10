@@ -13,17 +13,22 @@ from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- 1. SETUP KHMER FONT ---
+# --- 1. SETUP KHMER FONT (URL ថ្មីដើរ ១០០%) ---
 FONTS_DIR = "fonts"
-FONT_PATH = os.path.join(FONTS_DIR, "NotoSansKhmer-Bold.ttf")
+FONT_PATH = os.path.join(FONTS_DIR, "Battambang-Bold.ttf")
 
 def setup_khmer_font():
     if not os.path.exists(FONTS_DIR):
         os.makedirs(FONTS_DIR, exist_ok=True)
     if not os.path.exists(FONT_PATH):
-        print("Downloading Noto Sans Khmer Bold Font...")
-        url = "https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer-Bold.ttf"
-        urllib.request.urlretrieve(url, FONT_PATH)
+        print("Downloading Khmer Bold Font...")
+        # URL ផ្លូវការថ្មីរបស់ Google Fonts
+        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/battambang/Battambang-Bold.ttf"
+        
+        # បន្ថែម User-Agent ការពារ Block
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response, open(FONT_PATH, 'wb') as out_file:
+            out_file.write(response.read())
         print("Khmer Font downloaded successfully!")
 
 setup_khmer_font()
