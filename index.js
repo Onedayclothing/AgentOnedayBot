@@ -1,4 +1,4 @@
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
@@ -69,8 +69,8 @@ let memoryDB = {
     defaultDeliveryFee: null 
   },
   allowedUsers: {},
-  pendingRequests: {},
-  groupTitles: {}
+  pendingRequests: {}, // { chatId: [userId1, userId2] }
+  groupTitles: {}      // { chatId: "Group Name" }
 };
 
 if (fs.existsSync(dbFile)) {
@@ -156,7 +156,7 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
-      { command: 'all', description: 'Approve រាល់ Join Requests តាមឈ្មោះ Group' },
+      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' },
       { command: 'ratebank', description: 'កំណត់ Rate តាមធនាគារ (Live)' },
       { command: 'rate4050', description: 'កំណត់ Rate ថេរ (ឧទាហរណ៍ 4050)' },
       { command: 'deliveryfree', description: 'កំណត់ថ្លៃដឹក Free ($0)' },
@@ -172,7 +172,7 @@ async function setupCommandsMenu() {
 bot.on('chat_join_request', async (ctx) => {
   try {
     const chatId = ctx.chatJoinRequest.chat.id.toString();
-    const chatTitle = ctx.chatJoinRequest.chat.title || "";
+    const chatTitle = ctx.chatJoinRequest.chat.title || "Group (មិនស្គាល់ឈ្មោះ)";
     const userId = ctx.chatJoinRequest.from.id;
 
     const db = getDatabase();
@@ -180,9 +180,7 @@ bot.on('chat_join_request', async (ctx) => {
       db.pendingRequests[chatId] = [];
     }
 
-    if (chatTitle) {
-      db.groupTitles[chatTitle.toLowerCase().trim()] = chatId;
-    }
+    db.groupTitles[chatId] = chatTitle;
 
     if (!db.pendingRequests[chatId].includes(userId)) {
       db.pendingRequests[chatId].push(userId);
@@ -193,110 +191,109 @@ bot.on('chat_join_request', async (ctx) => {
   }
 });
 
-// --- 5. HIGH-SECURITY ANTI-SPAM /ALL COMMAND ---
-bot.use(async (ctx, next) => {
-  if (!ctx.message || !ctx.message.text) return next();
-  const text = ctx.message.text.trim();
+// --- 5. /ACCEPT COMMAND (SHOW GROUP BUTTON LIST) ---
+bot.command('accept', async (ctx) => {
   const senderId = ctx.from.id ? ctx.from.id.toString() : "";
-  const db = getDatabase();
-
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  if (text.toLowerCase().startsWith('/all')) {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /all នេះទេ!");
-
-    let targetChatId = null;
-    let targetTitle = "";
-    const groupNameInput = text.substring(4).trim();
-
-    if (groupNameInput) {
-      const cleanKey = groupNameInput.toLowerCase();
-      targetChatId = db.groupTitles[cleanKey];
-      targetTitle = groupNameInput;
-
-      if (!targetChatId) {
-        for (const [title, id] of Object.entries(db.groupTitles)) {
-          if (title.includes(cleanKey) || cleanKey.includes(title)) {
-            targetChatId = id;
-            targetTitle = title;
-            break;
-          }
-        }
-      }
-    } else if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-      targetChatId = ctx.chat.id.toString();
-      targetTitle = ctx.chat.title;
-    }
-
-    if (!targetChatId) {
-      return ctx.reply("❌ មិនអាចស្វែងរក Group នេះឃើញទេ! សូមប្រាកដថាបានវាយឈ្មោះ Group ត្រឹមត្រូវ។");
-    }
-
-    const requests = db.pendingRequests[targetChatId] || [];
-    const totalRequests = requests.length;
-
-    if (totalRequests === 0) {
-      return ctx.reply(`ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំក្នុង Group "${targetTitle}" ឡើយ!`);
-    }
-
-    const statusMsg = await ctx.reply(`🛡️ **ចាប់ផ្តើមដំណើរការប្រព័ន្ធសុវត្ថិភាព Anti-Spam...**\n\nកំពុង Approve សមាជិកចំនួន **${totalRequests.toLocaleString()} នាក់** ក្នុង Group "${targetTitle}" (អាចចំណាយពេល ២០-២៥ នាទី ដើម្បីការពារ Bot ចាញ់ Block)`);
-
-    let approvedCount = 0;
-    let failedCount = 0;
-    const batchSize = 50; // សម្រាកធំរៀងរាល់ ៥០ នាក់ម្ដង
-
-    for (let i = 0; i < totalRequests; i++) {
-      const userId = requests[i];
-      try {
-        await ctx.telegram.approveChatJoinRequest(targetChatId, userId);
-        approvedCount++;
-      } catch (err) {
-        failedCount++;
-        // បើជួប Telegram Rate Limit (Error 429) ឱ្យ Bot ផ្អាកសម្រាក ៣០ វិនាទី
-        if (err.message && err.message.includes('429')) {
-          console.log("Telegram Rate Limit Hit! Pausing 30 seconds for safety...");
-          await new Promise(r => setTimeout(r, 30000));
-        }
-      }
-
-      // Delay ២០០ មីលីវិនាទីរវាងមនុស្សម្នាក់ៗ (ការពារ Telegram Spam Filter)
-      await new Promise(r => setTimeout(r, 200));
-
-      // រាល់ពេលគ្រប់ ៥០ នាក់ សម្រាក ១០ វិនាទីពេញ និង Update ព័ត៌មានប្រាប់ Admin
-      if ((i + 1) % batchSize === 0 || i === totalRequests - 1) {
-        try {
-          await ctx.telegram.editMessageText(
-            ctx.chat.id,
-            statusMsg.message_id,
-            null,
-            `⏳ **កំពុងរត់ក្នុងទម្រង់ Safe Anti-Spam Mode...**\n\n📌 **Group:** ${targetTitle}\n✅ ជោគជ័យ: **${approvedCount.toLocaleString()} / ${totalRequests.toLocaleString()}** នាក់\n❌ បរាជ័យ: **${failedCount}** នាក់\n☕ *សម្រាក ១០ វិនាទី ការពារ Telegram Spam...*`
-          );
-        } catch (e) {}
-        await new Promise(r => setTimeout(r, 10000)); // សម្រាក ១០ វិនាទី
-      }
-    }
-
-    db.pendingRequests[targetChatId] = [];
-    await saveDatabase(db);
-
-    return ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      null,
-      `🎉 **បញ្ចប់ដំណើរការដោយជោគជ័យ និងសុវត្ថិភាព ១០០%!**\n\n📌 **Group:** ${targetTitle}\n✅ បាន Approve សរុប: **${approvedCount.toLocaleString()} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
-      { parse_mode: 'Markdown' }
-    );
+  if (!isAdmin) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /accept នេះទេ!");
   }
 
-  return next();
+  const db = getDatabase();
+  const pendingGroups = Object.keys(db.pendingRequests).filter(
+    (chatId) => db.pendingRequests[chatId] && db.pendingRequests[chatId].length > 0
+  );
+
+  if (pendingGroups.length === 0) {
+    return ctx.reply("ℹ️ បច្ចុប្បន្នមិនមាន Group ណាដែលមាន Join Request មកទេ!");
+  }
+
+  // បង្កើត Inline Buttons សម្រាប់ Group នីមួយៗ
+  const buttons = pendingGroups.map((chatId) => {
+    const title = db.groupTitles[chatId] || `Group ${chatId}`;
+    const count = db.pendingRequests[chatId].length;
+    return [Markup.button.callback(`👥 ${title} (${count.toLocaleString()} នាក់)`, `approve_group:${chatId}`)];
+  });
+
+  return ctx.reply("👇 សូមជ្រើសរើស Group ដែលអ្នកចង់ Approve Join Requests៖", Markup.inlineKeyboard(buttons));
 });
 
-// --- 6. START COMMAND HANDLER ---
+// --- 6. HANDLE BUTTON CLICK TO APPROVE SELECTED GROUP ---
+bot.action(/^approve_group:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+
+  const db = getDatabase();
+  const requests = db.pendingRequests[chatId] || [];
+  const totalRequests = requests.length;
+  const targetTitle = db.groupTitles[chatId] || "Group";
+
+  if (totalRequests === 0) {
+    return ctx.editMessageText(`ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំក្នុង Group "${targetTitle}" ឡើយ!`);
+  }
+
+  await ctx.editMessageText(
+    `🛡️ **ចាប់ផ្តើមដំណើរការប្រព័ន្ធសុវត្ថិភាព Anti-Spam...**\n\nកំពុង Approve សមាជិកចំនួន **${totalRequests.toLocaleString()} នាក់** ក្នុង Group "${targetTitle}"...`
+  );
+
+  let approvedCount = 0;
+  let failedCount = 0;
+  const batchSize = 50;
+
+  for (let i = 0; i < totalRequests; i++) {
+    const userId = requests[i];
+    try {
+      await ctx.telegram.approveChatJoinRequest(chatId, userId);
+      approvedCount++;
+    } catch (err) {
+      failedCount++;
+      if (err.message && err.message.includes('429')) {
+        console.log("Telegram Rate Limit Hit! Pausing 30 seconds for safety...");
+        await new Promise((r) => setTimeout(r, 30000));
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    if ((i + 1) % batchSize === 0 || i === totalRequests - 1) {
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          ctx.callbackQuery.message.message_id,
+          null,
+          `⏳ **កំពុងរត់ក្នុងទម្រង់ Safe Anti-Spam Mode...**\n\n📌 **Group:** ${targetTitle}\n✅ ជោគជ័យ: **${approvedCount.toLocaleString()} / ${totalRequests.toLocaleString()}** នាក់\n❌ បរាជ័យ: **${failedCount}** នាក់\n☕ *សម្រាក ១០ វិនាទី ការពារ Telegram Spam...*`
+        );
+      } catch (e) {}
+      await new Promise((r) => setTimeout(r, 10000));
+    }
+  }
+
+  db.pendingRequests[chatId] = [];
+  await saveDatabase(db);
+
+  return ctx.telegram.editMessageText(
+    ctx.chat.id,
+    ctx.callbackQuery.message.message_id,
+    null,
+    `🎉 **បញ្ចប់ដំណើរការដោយជោគជ័យ និងសុវត្ថិភាព ១០០%!**\n\n📌 **Group:** ${targetTitle}\n✅ បាន Approve សរុប: **${approvedCount.toLocaleString()} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// --- 7. START COMMAND HANDLER ---
 bot.start(async (ctx) => {
   return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
 });
 
-// --- 7. AUTHORIZATION MIDDLEWARE ---
+// --- 8. AUTHORIZATION MIDDLEWARE ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -310,7 +307,7 @@ bot.use(async (ctx, next) => {
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
-    const systemCmds = ['start', 'all', 'ratebank', 'deliveryfree', 'deliveryauto'];
+    const systemCmds = ['start', 'accept', 'ratebank', 'deliveryfree', 'deliveryauto'];
     
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
       if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
@@ -383,7 +380,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 8. GROUP MODERATION ---
+// --- 9. GROUP MODERATION & INSTANT DELETE SERVICE MESSAGES ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -416,7 +413,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- 9. ORDER PARSER ---
+// --- 10. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -432,7 +429,7 @@ function parseOrderText(text) {
       let line = lines[i];
 
       if (line.includes('— Order') || line.includes('– Order')) {
-        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
       }
 
       if (line.includes('ឈ្មោះ:')) {
@@ -511,7 +508,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- 10. CANVAS RENDERER ---
+// --- 11. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -723,7 +720,7 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- 11. EXPRESS ROUTES & MESSAGE HANDLERS ---
+// --- 12. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
@@ -808,7 +805,7 @@ bot.on('text', async (ctx, next) => {
   return next();
 });
 
-// --- 12. START APP ---
+// --- 13. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
@@ -818,7 +815,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, and Ultra Safe Anti-Spam Mode Active!");
+  console.log("Bot, Database, and Interactive Group List Button Active!");
 }
 
 startApp();
