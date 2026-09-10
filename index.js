@@ -174,7 +174,7 @@ bot.start(async (ctx) => {
   return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
 });
 
-// --- 5. STRICT AUTHORIZATION MIDDLEWARE ---
+// --- 5. AUTHORIZATION MIDDLEWARE ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -182,10 +182,9 @@ bot.use(async (ctx, next) => {
   const username = (ctx.from.username || "").toLowerCase();
   const db = getDatabase();
 
-  // ផ្ទៀងផ្ទាត់ ADMIN តាម ID រឹងមាំ ១០០%
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username (សម្រាប់តែ Admin)
+  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
@@ -199,7 +198,7 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername (សម្រាប់តែ Admin)
+  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername
   const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
   if (removeMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -581,6 +580,28 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
   });
 }
 
+// Function បង្កើតរូបភាព (Fix ឈ្មោះ Function ត្រូវគ្នា ១០០%)
+async function generateInvoiceImages(data, exchangeRate) {
+  const itemsPerPage = 10;
+  const totalPages = Math.ceil(data.items.length / itemsPerPage);
+  const buffers = [];
+
+  const invoiceNum = Math.floor(100000 + Math.random() * 900000);
+  const now = new Date();
+  const orderDate = now.toLocaleDateString('en-GB');
+  const optionsTime = { timeZone: 'Asia/Phnom_Penh', hour: 'numeric', minute: '2-digit', hour12: true };
+  const timeStr = new Intl.DateTimeFormat('en-GB', optionsTime).format(now).toLowerCase().replace('pm', 'p.m.').replace('am', 'a.m.');
+
+  const fullData = { ...data, invoiceNum, orderDate, timeStr };
+
+  for (let i = 0; i < totalPages; i++) {
+    const pageItems = data.items.slice(i * itemsPerPage, (i + 1) * itemsPerPage);
+    const imgBuffer = await renderSinglePage(fullData, pageItems, i * itemsPerPage, i + 1, totalPages, exchangeRate);
+    buffers.push(imgBuffer);
+  }
+  return buffers;
+}
+
 // --- 9. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
@@ -676,7 +697,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, and Strict Security Permissions active!");
+  console.log("Bot, Database, and Khmer Font started successfully!");
 }
 
 startApp();
