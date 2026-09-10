@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const { createCanvas, registerFont } = require('canvas');
 const express = require('express');
 
-// --- AUTO DOWNLOAD & REGISTER KHMER BOLD FONT ---
+// --- 1. AUTO DOWNLOAD & REGISTER KHMER BOLD FONT ---
 const fontsDir = path.join(__dirname, 'fonts');
 const fontPath = path.join(fontsDir, 'Battambang-Bold.ttf');
 
@@ -33,6 +33,7 @@ async function setupKhmerFont() {
   }
 }
 
+// --- 2. SERVER & DATABASE SETUP ---
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -65,7 +66,7 @@ let memoryDB = {
   settings: { 
     exchangeRate: 4045, 
     isAutoRate: true,
-    defaultDeliveryFee: null // null មានន័យថាគិតតាមអត្ថបទ Order ដើម
+    defaultDeliveryFee: null 
   } 
 };
 
@@ -128,7 +129,6 @@ async function saveDatabase(data) {
   }
 }
 
-// ទាញយក Rate Live តាមកន្លែង API អន្តរជាតិ/ធនាគារ
 async function fetchLiveExchangeRate() {
   const db = getDatabase();
   if (db.settings && db.settings.isAutoRate === false) return;
@@ -146,14 +146,31 @@ async function fetchLiveExchangeRate() {
   }
 }
 
-// --- Dynamic Commands RegEx ( /rate4050 ឬ /delivery2.5 ) ---
+// --- 3. TELEGRAM / COMMAND MENU SETUP ---
+async function setupCommandsMenu() {
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
+      { command: 'ratebank', description: 'កំណត់ Rate តាមធនាគារ (Live)' },
+      { command: 'rate4050', description: 'កំណត់ Rate ថេរ (ឧទាហរណ៍ 4050)' },
+      { command: 'deliveryfree', description: 'កំណត់ថ្លៃដឹក Free ($0)' },
+      { command: 'delivery1', description: 'កំណត់ថ្លៃដឹក $1 (ឬលេខផ្សេង)' },
+      { command: 'deliveryauto', description: 'គិតថ្លៃដឹកតាម Order ដើម' }
+    ]);
+    console.log("Commands Menu configured!");
+  } catch (err) {
+    console.error("Error setting commands menu:", err.message);
+  }
+}
+
+// --- 4. DYNAMIC COMMAND HANDLERS (/rateXXXX, /deliveryXXX) ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
   const senderId = ctx.from.id.toString();
   const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
 
-  // 1. /ratebank
+  // /ratebank
   if (text.toLowerCase() === '/ratebank') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -163,7 +180,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🔄 បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ! Rate: ${db.settings.exchangeRate} KHR`);
   }
 
-  // 2. /rateXXXX (ឧទាហរណ៍ /rate4050 ឬ /rate4100)
+  // /rateXXXX (ឧទាហរណ៍ /rate4050)
   const rateMatch = text.match(/^\/rate(\d+)$/i);
   if (rateMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -175,7 +192,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
   }
 
-  // 3. /deliveryfree ឬ /delivery0
+  // /deliveryfree ឬ /delivery0
   if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -184,7 +201,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
   }
 
-  // 4. /deliveryXXX (ឧទាហរណ៍ /delivery1.5 ឬ /delivery2)
+  // /deliveryXXX (ឧទាហរណ៍ /delivery1.5)
   const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
   if (delMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -195,7 +212,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
   }
 
-  // /deliveryauto - ត្រឡប់ទៅយកតាមការបូកក្នុង Text Order ដើមវិញ
+  // /deliveryauto
   if (text.toLowerCase() === '/deliveryauto') {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const db = getDatabase();
@@ -207,10 +224,10 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 5. MUTE/DELETE LINK & JOIN/LEAVE MESSAGES IN GROUPS ---
+// --- 5. GROUP MODERATION (DELETE JOIN/LEAVE & LINKS) ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
-    await ctx.deleteMessage(); // លុបសារ Join/Leave
+    await ctx.deleteMessage();
   } catch (e) {}
 });
 
@@ -220,7 +237,6 @@ bot.on('message', async (ctx, next) => {
   }
 
   try {
-    // ពិនិត្យមើលថាតើអ្នកផ្ញើជា Admin/Owner ឬអត់
     const member = await ctx.getChatMember(ctx.from.id);
     const isAdminOrOwner = ['administrator', 'creator'].includes(member.status);
 
@@ -230,7 +246,7 @@ bot.on('message', async (ctx, next) => {
       const isLink = hasEntities.some(e => e.type === 'url' || e.type === 'text_link') || /https?:\/\/[^\s]+/gi.test(text);
 
       if (isLink) {
-        await ctx.deleteMessage(); // លុបសារដែលមាន Link ចោលភ្លាម
+        await ctx.deleteMessage();
         return;
       }
     }
@@ -241,7 +257,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- PARSER FOR ORDER TEXT ---
+// --- 6. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -302,7 +318,6 @@ function parseOrderText(text) {
       }
     }
 
-    // ពិនិត្យមើលថាតើមាន Set Custom Delivery Fee ឬអត់
     const db = getDatabase();
     if (db.settings && db.settings.defaultDeliveryFee !== null && db.settings.defaultDeliveryFee !== undefined) {
       deliveryFee = db.settings.defaultDeliveryFee;
@@ -337,7 +352,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- CANVAS GENERATOR WITH BOLD & DARK COLORS ---
+// --- 7. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -549,14 +564,13 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- EXPRESS ROUTE FOR /form ---
+// --- 8. EXPRESS ROUTES & BOT MESSAGE LISTENERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
 app.get('/', (req, res) => res.send('Invoice Bot Telegram Active!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- BOT LISTENERS & COMMANDS ---
 bot.on('text', async (ctx, next) => {
   const text = ctx.message.text.trim();
   if (text.startsWith('/')) {
@@ -629,13 +643,17 @@ bot.start(async (ctx) => {
   ctx.reply(`🤖 Bot ដំណើរការជោគជ័យ (Free ឥតគិតថ្លៃ)!\n\nគ្រាន់តែ Copy & Paste អត្ថបទ Order ចូលទីនេះ វានឹងចេញជារូបភាពវិក្កយបត្រស្អាតល្អជូនភ្លាមៗ!`);
 });
 
+// --- 9. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
   fetchLiveExchangeRate();
   setInterval(fetchLiveExchangeRate, 12 * 60 * 60 * 1000);
+  
+  await setupCommandsMenu();
+  
   bot.launch();
-  console.log("Bot, Database, and Khmer Font started successfully!");
+  console.log("Bot, Database, Khmer Font, and Commands Menu started successfully!");
 }
 
 startApp();
