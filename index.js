@@ -40,7 +40,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const PORT = process.env.PORT || 8080;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || "";
+const ADMIN_CHAT_ID = (process.env.ADMIN_CHAT_ID || "").trim();
 let DATABASE_URL = process.env.DATABASE_URL;
 
 if (DATABASE_URL) {
@@ -68,7 +68,7 @@ let memoryDB = {
     isAutoRate: true,
     defaultDeliveryFee: null 
   },
-  allowedUsers: {} // រក្សាទុកបញ្ជី User ទទួលបានសិទ្ធិ { username: true }
+  allowedUsers: {} 
 };
 
 if (fs.existsSync(dbFile)) {
@@ -174,43 +174,48 @@ bot.start(async (ctx) => {
   return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
 });
 
-// --- 5. AUTHORIZATION COMMANDS & SETTINGS (/username, /unusername) ---
+// --- 5. STRICT AUTHORIZATION MIDDLEWARE ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
-  const senderId = ctx.from.id.toString();
-  const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
 
-  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username (ឧទាហរណ៍ /john_doe)
+  // ផ្ទៀងផ្ទាត់ ADMIN តាម ID រឹងមាំ ១០០%
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username (សម្រាប់តែ Admin)
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
-  if (addMatch && isAdmin) {
+  if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
-    const systemCmds = ['start', 'ratebank', 'deliveryfree', 'deliveryauto', 'unname'];
+    const systemCmds = ['start', 'ratebank', 'deliveryfree', 'deliveryauto'];
     
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
-      const db = getDatabase();
+      if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
       db.allowedUsers[targetUser] = true;
       await saveDatabase(db);
       return ctx.reply(`✅ បានអនុញ្ញាតឱ្យ @${addMatch[1]} ប្រើប្រាស់ Bot រហូតរៀងទៅ!`);
     }
   }
 
-  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername (ឧទាហរណ៍ /unjohn_doe)
+  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername (សម្រាប់តែ Admin)
   const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
-  if (removeMatch && isAdmin) {
+  if (removeMatch) {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const targetUser = removeMatch[1].toLowerCase();
-    const db = getDatabase();
     if (db.allowedUsers[targetUser]) {
       delete db.allowedUsers[targetUser];
       await saveDatabase(db);
       return ctx.reply(`❌ បានលុបសិទ្ធិប្រើប្រាស់របស់ @${removeMatch[1]} រួចរាល់!`);
+    } else {
+      return ctx.reply(`⚠️ មិនមានឈ្មោះ @${removeMatch[1]} ក្នុងបញ្ជីសិទ្ធិស្រាប់ទេ!`);
     }
   }
 
   // ៣. /ratebank
   if (text.toLowerCase() === '/ratebank') {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    const db = getDatabase();
+    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.isAutoRate = true;
     await saveDatabase(db);
     await fetchLiveExchangeRate();
@@ -220,9 +225,8 @@ bot.use(async (ctx, next) => {
   // ៤. /rateXXXX
   const rateMatch = text.match(/^\/rate(\d+)$/i);
   if (rateMatch) {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const customRate = parseFloat(rateMatch[1]);
-    const db = getDatabase();
     db.settings.isAutoRate = false;
     db.settings.exchangeRate = customRate;
     await saveDatabase(db);
@@ -231,8 +235,7 @@ bot.use(async (ctx, next) => {
 
   // ៥. /deliveryfree ឬ /delivery0
   if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    const db = getDatabase();
+    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.defaultDeliveryFee = 0;
     await saveDatabase(db);
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
@@ -241,9 +244,8 @@ bot.use(async (ctx, next) => {
   // ៦. /deliveryXXX
   const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
   if (delMatch) {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     const customDelivery = parseFloat(delMatch[1]);
-    const db = getDatabase();
     db.settings.defaultDeliveryFee = customDelivery;
     await saveDatabase(db);
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
@@ -251,8 +253,7 @@ bot.use(async (ctx, next) => {
 
   // ៧. /deliveryauto
   if (text.toLowerCase() === '/deliveryauto') {
-    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
-    const db = getDatabase();
+    if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.defaultDeliveryFee = null;
     await saveDatabase(db);
     return ctx.reply(`🔄 ថ្លៃដឹកជញ្ជូននឹងគិតតាមការវាយបញ្ចូលក្នុង Order អត្ថបទដើមវិញ!`);
@@ -261,7 +262,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 6. GROUP MODERATION (DELETE JOIN/LEAVE & LINKS) ---
+// --- 6. GROUP MODERATION ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -580,27 +581,6 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
   });
 }
 
-async function generateInvoiceImages(data, exchangeRate) {
-  const itemsPerPage = 10;
-  const totalPages = Math.ceil(data.items.length / itemsPerPage);
-  const buffers = [];
-
-  const invoiceNum = Math.floor(100000 + Math.random() * 900000);
-  const now = new Date();
-  const orderDate = now.toLocaleDateString('en-GB');
-  const optionsTime = { timeZone: 'Asia/Phnom_Penh', hour: 'numeric', minute: '2-digit', hour12: true };
-  const timeStr = new Intl.DateTimeFormat('en-GB', optionsTime).format(now).toLowerCase().replace('pm', 'p.m.').replace('am', 'a.m.');
-
-  const fullData = { ...data, invoiceNum, orderDate, timeStr };
-
-  for (let i = 0; i < totalPages; i++) {
-    const pageItems = data.items.slice(i * itemsPerPage, (i + 1) * itemsPerPage);
-    const imgBuffer = await renderSinglePage(fullData, pageItems, i * itemsPerPage, i + 1, totalPages, exchangeRate);
-    buffers.push(imgBuffer);
-  }
-  return buffers;
-}
-
 // --- 9. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
@@ -614,11 +594,11 @@ bot.on('text', async (ctx, next) => {
     return next();
   }
 
-  // ពិនិត្យសិទ្ធិប្រើប្រាស់មុខងារបង្កើត Invoice (Admin និង User ក្នុងបញីឈ្នោះអនុញ្ញាត)
-  const senderId = ctx.from.id.toString();
-  const username = (ctx.from.username || '').toLowerCase();
-  const isAdmin = !ADMIN_CHAT_ID || senderId === ADMIN_CHAT_ID.toString();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
   const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
   const isAllowed = isAdmin || (username && db.allowedUsers[username]);
 
   if (!isAllowed) {
@@ -696,7 +676,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, Khmer Font, and Dynamic Permissions started successfully!");
+  console.log("Bot, Database, and Strict Security Permissions active!");
 }
 
 startApp();
