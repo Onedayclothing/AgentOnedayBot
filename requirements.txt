@@ -1,7 +1,7 @@
 python-telegram-bot==21.10
-Pillow
 psycopg2-binary
 requests
 Flask
 gunicorn
 pytz
+playwright
