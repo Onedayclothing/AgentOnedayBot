@@ -186,7 +186,7 @@ def parse_order_text(text):
         print("Parse Error:", e)
         return None
 
-# --- 4. HTML/CSS INVOICE RENDERER (PERFECT KHMER FONT) ---
+# --- 4. HTML/CSS INVOICE RENDERER ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="km">
@@ -382,7 +382,9 @@ def generate_invoice_images(data, exchange_rate):
 
     full_data = {**data, 'invoiceNum': invoice_num, 'orderDate': order_date, 'timeStr': time_str}
 
-    rendered_html = render_template_string(HTML_TEMPLATE, data=full_data, exchange_rate=exchange_rate)
+    # Use Flask app_context to prevent "Working outside of application context" error
+    with app.app_context():
+        rendered_html = render_template_string(HTML_TEMPLATE, data=full_data, exchange_rate=exchange_rate)
     
     file_path = f"Invoice_{random.randint(1000, 9999)}.jpg"
 
