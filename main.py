@@ -10,7 +10,7 @@ import requests
 from flask import Flask, render_template_string
 from threading import Thread
 from PIL import Image, ImageDraw, ImageFont
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- 1. SETUP KHMER FONT ---
@@ -132,7 +132,7 @@ def form():
     return render_template_string("<!DOCTYPE html><html lang='km'><head><meta charset='UTF-8'><title>Invoice Bot</title></head><body style='font-family:sans-serif; text-align:center; padding-top:50px;'><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>")
 
 def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='0.0.0.0', port=PORT, use_reloader=False)
 
 # --- 4. ORDER PARSER ---
 def parse_order_text(text):
@@ -444,24 +444,22 @@ def main():
     init_db()
     fetch_live_exchange_rate()
 
-    # Start Flask Server in Background Thread
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
+    # Start Flask Web Server
+    flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Start Telegram Bot
     if not BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN is missing!")
         return
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Start Telegram Bot Polling
+    app_bot = Application.builder().token(BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("setrate", setrate_command))
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("setrate", setrate_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Bot, Database, and Khmer Font started successfully!")
-    application.run_polling()
+    print("Bot and Web Server started successfully!")
+    app_bot.run_polling()
 
 if __name__ == '__main__':
     main()
