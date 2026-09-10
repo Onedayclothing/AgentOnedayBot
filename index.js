@@ -68,18 +68,16 @@ let memoryDB = {
     isAutoRate: true,
     defaultDeliveryFee: null 
   },
-  allowedUsers: {} 
+  allowedUsers: {},
+  pendingRequests: {} // { chatId: [userId1, userId2, ...] }
 };
 
 if (fs.existsSync(dbFile)) {
   try {
     memoryDB = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
-    if (!memoryDB.settings) {
-      memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
-    }
-    if (!memoryDB.allowedUsers) {
-      memoryDB.allowedUsers = {};
-    }
+    if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+    if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
+    if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
   } catch (e) {
     console.error("Error reading dbFile:", e);
   }
@@ -97,12 +95,9 @@ async function initDB() {
       const res = await pool.query(`SELECT data FROM system_store WHERE id = 1;`);
       if (res.rows.length > 0) {
         memoryDB = res.rows[0].data;
-        if (!memoryDB.settings) {
-          memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
-        }
-        if (!memoryDB.allowedUsers) {
-          memoryDB.allowedUsers = {};
-        }
+        if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+        if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
+        if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
         console.log("Database restored successfully from PostgreSQL!");
       } else {
         await pool.query(`INSERT INTO system_store (id, data) VALUES (1, $1);`, [JSON.stringify(memoryDB)]);
@@ -158,6 +153,7 @@ async function setupCommandsMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
+      { command: 'all', description: 'Approve រាល់ Join Requests ទាំងអស់' },
       { command: 'ratebank', description: 'កំណត់ Rate តាមធនាគារ (Live)' },
       { command: 'rate4050', description: 'កំណត់ Rate ថេរ (ឧទាហរណ៍ 4050)' },
       { command: 'deliveryfree', description: 'កំណត់ថ្លៃដឹក Free ($0)' },
@@ -169,12 +165,92 @@ async function setupCommandsMenu() {
   }
 }
 
-// --- 4. START COMMAND HANDLER ---
+// --- 4. RECORD JOIN REQUESTS ---
+bot.on('chat_join_request', async (ctx) => {
+  try {
+    const chatId = ctx.chatJoinRequest.chat.id.toString();
+    const userId = ctx.chatJoinRequest.from.id;
+
+    const db = getDatabase();
+    if (!db.pendingRequests[chatId]) {
+      db.pendingRequests[chatId] = [];
+    }
+
+    // ការពារកុំឱ្យរក្សាទុក Duplicate ID
+    if (!db.pendingRequests[chatId].includes(userId)) {
+      db.pendingRequests[chatId].push(userId);
+      await saveDatabase(db);
+      console.log(`Saved join request for User ${userId} in Chat ${chatId}`);
+    }
+  } catch (err) {
+    console.error("Error saving chat_join_request:", err.message);
+  }
+});
+
+// --- 5. /ALL COMMAND TO ACCEPT ALL PENDING REQUESTS ---
+bot.command('all', async (ctx) => {
+  const chatId = ctx.chat.id.toString();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const db = getDatabase();
+
+  // ឆែកមើល Admin សិទ្ធិ
+  const isAdminEnv = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  let isGroupAdmin = false;
+
+  if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
+    try {
+      const member = await ctx.getChatMember(ctx.from.id);
+      isGroupAdmin = ['administrator', 'creator'].includes(member.status);
+    } catch (e) {}
+  }
+
+  if (!isAdminEnv && !isGroupAdmin) {
+    return ctx.reply("❌ មានតែ Admin ទេដែលមានសិទ្ធិប្រើប្រាស់ Command /all នេះ!");
+  }
+
+  const requests = db.pendingRequests[chatId] || [];
+
+  if (requests.length === 0) {
+    return ctx.reply("ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំឡើយ!");
+  }
+
+  const statusMsg = await ctx.reply(`⏳ កំពុងចាប់ផ្តើម Approve សមាជិកចំនួន ${requests.length} នាក់...`);
+
+  let approvedCount = 0;
+  let failedCount = 0;
+  const remainingRequests = [];
+
+  for (const userId of requests) {
+    try {
+      await ctx.telegram.approveChatJoinRequest(chatId, userId);
+      approvedCount++;
+      // បន្ថែម delay 100ms ដើម្បីការពារ Telegram Rate Limit
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (err) {
+      console.error(`Failed to approve ${userId}:`, err.message);
+      failedCount++;
+    }
+  }
+
+  // សម្អាតបញ្ជីដែលបាន Approve រួចរាល់
+  db.pendingRequests[chatId] = [];
+  await saveDatabase(db);
+
+  return ctx.telegram.editMessageText(
+    chatId,
+    statusMsg.message_id,
+    null,
+    `✅ **ដំណើរការជោគជ័យ!**\n\n🎉 បាន Approve ចូល Group: **${approvedCount} នាក់**\n❌ បរាជ័យ (អាចគេ Cancel វិញ): **${failedCount} នាក់**`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// --- 6. START COMMAND HANDLER ---
 bot.start(async (ctx) => {
   return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
 });
 
-// --- 5. AUTHORIZATION MIDDLEWARE ---
+// --- 7. AUTHORIZATION MIDDLEWARE ---
 bot.use(async (ctx, next) => {
   if (!ctx.message || !ctx.message.text) return next();
   const text = ctx.message.text.trim();
@@ -184,11 +260,11 @@ bot.use(async (ctx, next) => {
 
   const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
 
-  // ១. បន្ថែមសិទ្ធិប្រើប្រាស់៖ /username
+  // /username
   const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
-    const systemCmds = ['start', 'ratebank', 'deliveryfree', 'deliveryauto'];
+    const systemCmds = ['start', 'all', 'ratebank', 'deliveryfree', 'deliveryauto'];
     
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
       if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
@@ -198,7 +274,7 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // ២. លុបសិទ្ធិប្រើប្រាស់៖ /unusername
+  // /unusername
   const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
   if (removeMatch) {
     if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -212,7 +288,7 @@ bot.use(async (ctx, next) => {
     }
   }
 
-  // ៣. /ratebank
+  // /ratebank
   if (text.toLowerCase() === '/ratebank') {
     if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.isAutoRate = true;
@@ -221,7 +297,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🔄 បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ! Rate: ${db.settings.exchangeRate} KHR`);
   }
 
-  // ៤. /rateXXXX
+  // /rateXXXX
   const rateMatch = text.match(/^\/rate(\d+)$/i);
   if (rateMatch) {
     if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -232,7 +308,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
   }
 
-  // ៥. /deliveryfree ឬ /delivery0
+  // /deliveryfree
   if (text.toLowerCase() === '/deliveryfree' || text.toLowerCase() === '/delivery0') {
     if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.defaultDeliveryFee = 0;
@@ -240,7 +316,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $0.00 (Free)`);
   }
 
-  // ៦. /deliveryXXX
+  // /deliveryXXX
   const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
   if (delMatch) {
     if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
@@ -250,7 +326,7 @@ bot.use(async (ctx, next) => {
     return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
   }
 
-  // ៧. /deliveryauto
+  // /deliveryauto
   if (text.toLowerCase() === '/deliveryauto') {
     if (!isAdmin && !db.allowedUsers[username]) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
     db.settings.defaultDeliveryFee = null;
@@ -261,7 +337,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// --- 6. GROUP MODERATION ---
+// --- 8. GROUP MODERATION ---
 bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
   try {
     await ctx.deleteMessage();
@@ -294,7 +370,7 @@ bot.on('message', async (ctx, next) => {
   return next();
 });
 
-// --- 7. ORDER PARSER ---
+// --- 9. ORDER PARSER ---
 function parseOrderText(text) {
   try {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l);
@@ -310,7 +386,7 @@ function parseOrderText(text) {
       let line = lines[i];
 
       if (line.includes('— Order') || line.includes('– Order')) {
-        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
       }
 
       if (line.includes('ឈ្មោះ:')) {
@@ -389,7 +465,7 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
-// --- 8. CANVAS RENDERER ---
+// --- 10. CANVAS RENDERER ---
 function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
   return new Promise((resolve) => {
     const scale = 3.5;
@@ -580,7 +656,6 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
   });
 }
 
-// Function បង្កើតរូបភាព (Fix ឈ្មោះ Function ត្រូវគ្នា ១០០%)
 async function generateInvoiceImages(data, exchangeRate) {
   const itemsPerPage = 10;
   const totalPages = Math.ceil(data.items.length / itemsPerPage);
@@ -602,7 +677,7 @@ async function generateInvoiceImages(data, exchangeRate) {
   return buffers;
 }
 
-// --- 9. EXPRESS ROUTES & MESSAGE HANDLERS ---
+// --- 11. EXPRESS ROUTES & MESSAGE HANDLERS ---
 app.get('/form', (req, res) => {
   res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
 });
@@ -687,7 +762,7 @@ bot.on('text', async (ctx, next) => {
   return next();
 });
 
-// --- 10. START APP ---
+// --- 12. START APP ---
 async function startApp() {
   await setupKhmerFont();
   await initDB();
@@ -697,7 +772,7 @@ async function startApp() {
   await setupCommandsMenu();
   
   bot.launch();
-  console.log("Bot, Database, and Khmer Font started successfully!");
+  console.log("Bot, Database, Khmer Font, and Auto-Accept Join Requests started!");
 }
 
 startApp();
