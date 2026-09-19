@@ -53,6 +53,11 @@ if (!BOT_TOKEN) {
 }
 const bot = new Telegraf(BOT_TOKEN);
 
+// GLOBAL ERROR HANDLER — error មួយៗមិនសម្លាប់ process ទេ
+bot.catch((err, ctx) => {
+  console.error(`[Bot Error] ${ctx?.updateType || 'unknown'}:`, err.message);
+});
+
 let pool = null;
 if (DATABASE_URL) {
   pool = new Pool({
@@ -62,11 +67,11 @@ if (DATABASE_URL) {
 }
 
 const dbFile = path.join(__dirname, 'licenses.json');
-let memoryDB = { 
-  settings: { 
-    exchangeRate: 4045, 
+let memoryDB = {
+  settings: {
+    exchangeRate: 4045,
     isAutoRate: true,
-    defaultDeliveryFee: null 
+    defaultDeliveryFee: null
   },
   allowedUsers: {},
   pendingRequests: {},
@@ -127,7 +132,7 @@ async function saveDatabase(data) {
   if (pool) {
     try {
       await pool.query(
-        `INSERT INTO system_store (id, data) VALUES (1, $1) 
+        `INSERT INTO system_store (id, data) VALUES (1, $1)
          ON CONFLICT (id) DO UPDATE SET data = $1;`,
         [JSON.stringify(data)]
       );
@@ -283,7 +288,7 @@ bot.action(/^exec_delete:(.+)$/, async (ctx) => {
   let failedCount = 0;
 
   const trackedMsgIds = db.recentMsgIds[chatId] || [];
-  
+
   if (trackedMsgIds.length > 0) {
     for (const msgId of trackedMsgIds) {
       try {
@@ -317,8 +322,13 @@ bot.action(/^exec_delete:(.+)$/, async (ctx) => {
   db.recentMsgIds[chatId] = [];
   await saveDatabase(db);
 
+  // FIXED: បន្ថែម chatId + messageId ឱ្យត្រឹមត្រូវ (មុនអត់ ទើបវា "chat not found")
   return ctx.telegram.editMessageText(
-    `✅ **លុបសារបានជោគជ័យ!**\n\n📌 **Group/Channel:** ${targetTitle}\n🗑️ ចំនួនសារដែលបានលុប៖ **${deletedCount}**`
+    ctx.chat.id,
+    ctx.callbackQuery.message.message_id,
+    null,
+    `✅ **លុបសារបានជោគជ័យ!**\n\n📌 **Group/Channel:** ${targetTitle}\n🗑️ ចំនួនសារដែលបានលុប៖ **${deletedCount}**`,
+    { parse_mode: 'Markdown' }
   );
 });
 
@@ -388,8 +398,8 @@ bot.command('delivery', async (ctx) => {
     return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
   }
 
-  const currentDel = db.settings.defaultDeliveryFee === null 
-    ? "គិតតាម Order ដើម (Auto)" 
+  const currentDel = db.settings.defaultDeliveryFee === null
+    ? "គិតតាម Order ដើម (Auto)"
     : `$${db.settings.defaultDeliveryFee.toFixed(2)}`;
 
   return ctx.reply(
@@ -573,7 +583,7 @@ bot.use(async (ctx, next) => {
   if (addMatch) {
     const targetUser = addMatch[1].toLowerCase();
     const systemCmds = ['start', 'accept', 'delete', 'rate', 'delivery'];
-    
+
     if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
       if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
       db.allowedUsers[targetUser] = true;
@@ -734,7 +744,7 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
     const isFirstPage = pageNum === 1;
     const isLastPage = pageNum === totalPages;
     const font = 'KhmerFont, sans-serif';
-    
+
     const canvasTemp = createCanvas(baseWidth * scale, 100 * scale);
     const ctxTemp = canvasTemp.getContext('2d');
     ctxTemp.font = `bold 16px ${font}`;
@@ -748,7 +758,7 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
     const hasMap = !!data.mapUrl;
     const customerInfoExtraHeight = hasMap ? 30 : 0;
 
-    const baseHeight = isFirstPage 
+    const baseHeight = isFirstPage
       ? (isLastPage ? 260 + totalItemsHeight + 350 + customerInfoExtraHeight : 200 + totalItemsHeight + 200 + customerInfoExtraHeight)
       : (isLastPage ? 180 + totalItemsHeight + 350 : 120 + totalItemsHeight + 150);
 
@@ -795,7 +805,7 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
       ctx.fillText('ឈ្មោះអតិថិជន៖ ' + data.name, 50, 142);
       ctx.fillText('លេខទូរស័ព្ទ៖ ' + data.phone, 50, 172);
       ctx.fillText('អាសយដ្ឋាន៖ ' + data.address, 50, 202);
-      
+
       if (hasMap) {
         ctx.fillStyle = '#0284c7';
         ctx.fillText('ទីតាំង Map៖ ' + data.mapUrl, 50, 232);
@@ -828,7 +838,7 @@ function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exch
 
       ctx.textAlign = 'left';
       ctx.fillStyle = '#000000';
-      
+
       ctx.fillText((startIndex + index + 1).toString(), 65, textCenterY);
 
       const startTextY = textCenterY - (((wrappedLines.length - 1) * 24) / 2);
@@ -1029,11 +1039,26 @@ async function startApp() {
   await initDB();
   fetchLiveExchangeRate();
   setInterval(fetchLiveExchangeRate, 12 * 60 * 60 * 1000);
-  
+
   await setupCommandsMenu();
-  
-  bot.launch();
-  console.log("Bot, Database, and Delete Feature Active!");
+
+  // FIXED: លុប Webhook ចាស់ មុនពេលបើក Polling (ការពារ Error 409 Conflict)
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+    console.log("Old webhook cleared. Starting polling...");
+  } catch (e) {
+    console.error("deleteWebhook error:", e.message);
+  }
+
+  // FIXED: Launch ដោយមាន retry — error 409 មិនសម្លាប់ process ទេ
+  const launch = () => bot.launch()
+    .then(() => console.log("Bot, Database, and Delete Feature Active!"))
+    .catch((err) => {
+      console.error("Launch error:", err.message);
+      console.log("Retrying in 5 seconds...");
+      setTimeout(launch, 5000);
+    });
+  launch();
 }
 
 startApp();
