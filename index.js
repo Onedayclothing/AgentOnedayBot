@@ -5,8 +5,12 @@ const { Pool } = require('pg');
 const { createCanvas, registerFont } = require('canvas');
 const express = require('express');
 
+// --- 0. RAILWAY VOLUME PATH SETUP ---
+// បើមាន Folder /data (នៅលើ Railway Volume) វានឹងប្រើ /data បើអត់ទេប្រើ __dirname ធម្មតា
+const dataDir = fs.existsSync('/data') ? '/data' : __dirname;
+
 // --- 1. AUTO DOWNLOAD & REGISTER KHMER BOLD FONT ---
-const fontsDir = path.join(__dirname, 'fonts');
+const fontsDir = path.join(dataDir, 'fonts');
 const fontPath = path.join(fontsDir, 'Battambang-Bold.ttf');
 
 async function setupKhmerFont() {
@@ -66,7 +70,8 @@ if (DATABASE_URL) {
   });
 }
 
-const dbFile = path.join(__dirname, 'licenses.json');
+// ប្រើប្រាស់ Volume path សម្រាប់ licenses.json
+const dbFile = path.join(dataDir, 'licenses.json');
 let memoryDB = { 
   settings: { 
     exchangeRate: 4045, 
@@ -218,7 +223,6 @@ bot.on('chat_join_request', async (ctx) => {
     if (!db.pendingRequests[chatId]) db.pendingRequests[chatId] = {};
     db.groupTitles[chatId] = chatTitle;
 
-    // រក្សាទុកជា Object តាមរយៈ userId ផ្ទាល់ ការពារការបាត់បង់សមាជិក
     db.pendingRequests[chatId][user.id.toString()] = {
       id: user.id,
       firstName: user.first_name || "No Name",
@@ -1056,6 +1060,10 @@ bot.on('text', async (ctx, next) => {
         })));
       }
 
+      mediaGroup.px?.forEach?.(m => {
+        if (fs.existsSync(m.path)) fs.unlinkSync(m.path);
+      });
+      // Safe cleanup loop:
       mediaGroup.forEach(m => {
         if (fs.existsSync(m.path)) fs.unlinkSync(m.path);
       });
@@ -1079,7 +1087,6 @@ async function startApp() {
   
   await setupCommandsMenu();
   
-  // លុប Webhook ចាស់ចោលមុន ដើម្បីការពារ Error 409 Conflict
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: false });
     console.log("Old webhook cleared successfully!");
@@ -1087,7 +1094,6 @@ async function startApp() {
     console.log("Clear webhook error:", e.message);
   }
 
-  // ដាក់ระบบ Launch ជាមួយ Retry ស្វ័យប្រវត្តិ ការពារការាច់ដំណើរការ
   const launchBot = () => {
     bot.launch()
       .then(() => console.log("Bot, Database, and Delete Feature Active!"))
