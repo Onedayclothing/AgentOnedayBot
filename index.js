@@ -1,818 +1,1107 @@
-import asyncio
-import json
-import os
-import random
-from datetime import datetime, timedelta, timezone
+const { Telegraf, Markup } = require('telegraf');
+const fs = require('fs');
+const path = require('path');
+const { Pool } = require('pg');
+const { createCanvas, registerFont } = require('canvas');
+const express = require('express');
 
-from pyrogram import Client, enums, filters
-from pyrogram.errors import (
-    FloodWait,
-    PeerFlood,
-    UserAlreadyParticipant,
-    UserNotMutualContact,
-    UserPrivacyRestricted,
-    UserRestricted,
-    UsernameInvalid,
-    UsernameNotOccupied,
-    ChatWriteForbidden,
-    UserBannedInChannel,
-    ChatAdminRequired,
-    ChannelPrivate,
-    ChannelInvalid,
-    PeerIdInvalid,
-    MessageIdInvalid,
-)
-from pyrogram.types import ChatJoinRequest, ChatMemberUpdated, Message
+// --- 1. AUTO DOWNLOAD & REGISTER KHMER BOLD FONT ---
+const fontsDir = path.join(__dirname, 'fonts');
+const fontPath = path.join(fontsDir, 'Battambang-Bold.ttf');
 
-# ------------------------------------------------------------------------------
-# ENVIRONMENT VARIABLES & CONFIG
-# ------------------------------------------------------------------------------
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
+async function setupKhmerFont() {
+  try {
+    if (!fs.existsSync(fontsDir)) {
+      fs.mkdirSync(fontsDir, { recursive: true });
+    }
 
-def parse_chats(chat_str):
-    if not chat_str or chat_str.strip().lower() in ("no", "off", "false", "0"):
-        return []
-    chats = []
-    for c in chat_str.split(","):
-        c = c.strip()
-        if not c or c.lower() in ("no", "off", "false", "0"):
-            continue
-        if c.startswith("-") or c.isdigit():
-            try:
-                chats.append(int(c))
-                continue
-            except ValueError:
-                pass
-        if not c.startswith("@"):
-            c = "@" + c
-        chats.append(c)
-    return chats
+    if (!fs.existsSync(fontPath)) {
+      console.log("Downloading Khmer Bold Font from Google Fonts...");
+      const fontUrl = "https://raw.githubusercontent.com/google/fonts/main/ofl/battambang/Battambang-Bold.ttf";
+      const response = await fetch(fontUrl);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      fs.writeFileSync(fontPath, buffer);
+      console.log("Khmer Bold Font downloaded successfully!");
+    }
 
-accounts_config = []
+    registerFont(fontPath, { family: 'KhmerFont' });
+    console.log("Khmer Bold Font registered successfully!");
+  } catch (err) {
+    console.error("Error setting up Khmer Font:", err.message);
+  }
+}
 
-# Session 1 (Primary)
-s1 = (os.environ.get("SESSION_STRING") or os.environ.get("SESSION_STRING_1", "")).strip()
-t1 = (os.environ.get("TARGET_CHAT_1") or os.environ.get("TARGET_CHAT", "")).strip()
+// --- 2. SERVER & DATABASE SETUP ---
+const app = express();
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-if s1:
-    accounts_config.append({
-        "index": 1,
-        "session": s1,
-        "targets": parse_chats(t1)
-    })
+const PORT = process.env.PORT || 8080;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
+const ADMIN_CHAT_ID = (process.env.ADMIN_CHAT_ID || "").trim();
+let DATABASE_URL = process.env.DATABASE_URL;
 
-# Session 2 រហូតដល់ 9
-for i in range(2, 10):
-    s_str = os.environ.get(f"SESSION_STRING_{i}", "").strip()
-    t_chat = os.environ.get(f"TARGET_CHAT_{i}", "").strip()
+if (DATABASE_URL) {
+  DATABASE_URL = DATABASE_URL.trim().replace(/[\r\n]+/g, '');
+}
+
+if (!BOT_TOKEN) {
+  console.error("Error: TELEGRAM_BOT_TOKEN is missing!");
+  process.exit(1);
+}
+const bot = new Telegraf(BOT_TOKEN);
+
+// GLOBAL ERROR HANDLER — មិនឱ្យ error តិចតួចសម្លាប់ process ទេ
+bot.catch((err, ctx) => {
+  console.error(`[Bot Error] ${ctx?.updateType || 'unknown'}:`, err.message);
+});
+
+let pool = null;
+if (DATABASE_URL) {
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+}
+
+const dbFile = path.join(__dirname, 'licenses.json');
+let memoryDB = { 
+  settings: { 
+    exchangeRate: 4045, 
+    isAutoRate: true,
+    defaultDeliveryFee: null 
+  },
+  allowedUsers: {},
+  pendingRequests: {},
+  groupTitles: {},
+  recentMsgIds: {}
+};
+
+// អានទិន្នន័យពី licenses.json ព្រមទាំងដាក់ Migration បំប្លែង Array ចាស់ទៅ Object
+if (fs.existsSync(dbFile)) {
+  try {
+    memoryDB = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+    if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+    if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
+    if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
     
-    if s_str:
-        accounts_config.append({
-            "index": i,
-            "session": s_str,
-            "targets": parse_chats(t_chat)
-        })
-
-SOURCE_CHAT = os.environ.get("SOURCE_CHAT", "")
-SLEEP_TIME = int(os.environ.get("SLEEP_TIME", 9000))
-
-RECORD_JOIN = os.environ.get("Record_Join", "")
-CHAT_TO_USER = os.environ.get("Chat_ToUser", "No").strip()
-
-WELCOME_ENABLED = CHAT_TO_USER.lower() not in ("no", "off", "false", "0", "")
-
-ACCEPT_REQUEST = os.environ.get("Accept_Request", "")
-ACCEPT_TF = os.environ.get("Accept_TF", "False").strip().lower() in ("true", "1", "yes", "on")
-
-ADD_TO_GROUP = os.environ.get("Add_To_Group", "")
-
-# កំណត់ថា Account ណាខ្លះត្រូវបានអនុញ្ញាតឱ្យ Add ចូល Group (ឧទាហរណ៍: "1,2,3")
-ADD_ACCOUNTS_STR = os.environ.get("ADD_ACCOUNTS", "").strip()
-allowed_add_accounts = []
-if ADD_ACCOUNTS_STR:
-    for x in ADD_ACCOUNTS_STR.split(","):
-        x = x.strip()
-        if x.isdigit():
-            allowed_add_accounts.append(int(x))
-
-# កំណត់ Limit ដាច់ដោយឡែកសម្រាប់ Account នីមួយៗ (ឧទាហរណ៍: "1:40,2:40,3:10")
-CUSTOM_LIMITS_STR = os.environ.get("CUSTOM_LIMITS", "").strip()
-account_custom_limits = {}
-if CUSTOM_LIMITS_STR:
-    for item in CUSTOM_LIMITS_STR.split(","):
-        if ":" in item:
-            try:
-                k, v = item.split(":")
-                account_custom_limits[int(k.strip())] = int(v.strip())
-            except ValueError:
-                pass
-
-WELCOME_MESSAGES_LIST = [msg.strip() for msg in CHAT_TO_USER.split(",") if msg.strip()]
-
-MAX_RETRIES = 3
-ICT = timezone(timedelta(hours=7))
-
-blocked_accounts = {}
-welcomed_users = set()
-
-# ------------------------------------------------------------------------------
-# FILES & STORAGE (Mounted to Railway Volume /data)
-# ------------------------------------------------------------------------------
-DATA_DIR = "/data"
-if not os.path.exists(DATA_DIR):
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-    except Exception:
-        DATA_DIR = "."
-
-QUEUE_FILE = os.path.join(DATA_DIR, "welcome_queue.json")
-ADD_QUEUE_FILE = os.path.join(DATA_DIR, "add_member_queue.json")
-ADD_DAILY_STATE_FILE = os.path.join(DATA_DIR, "add_daily_state.json")
-BROADCASTER_STATE_FILE = os.path.join(DATA_DIR, "broadcaster_state.json")
-SOURCE_MESSAGES_FILE = os.path.join(DATA_DIR, "source_messages.json")
-
-file_lock = asyncio.Lock()
-
-# ------------------------------------------------------------------------------
-# SAFE ATOMIC FILE HANDLING (CRASH-PROOF)
-# ------------------------------------------------------------------------------
-def safe_load_json(filename, default_val):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            try:
-                os.replace(filename, filename + ".bak")
-            except Exception:
-                pass
-            return default_val
-    return default_val
-
-def safe_save_json(filename, data):
-    tmp_file = filename + ".tmp"
-    try:
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        os.replace(tmp_file, filename)
-    except Exception:
-        if os.path.exists(tmp_file):
-            try:
-                os.remove(tmp_file)
-            except Exception:
-                pass
-
-def is_chat_matched(chat_obj, target_list):
-    if not target_list:
-        return False
-    chat_id_str = str(chat_obj.id)
-    chat_username = str(chat_obj.username).lower() if chat_obj.username else ""
-
-    for t in target_list:
-        t_str = str(t)
-        if t_str == chat_id_str:
-            return True
-        if t_str.replace("-100", "") == chat_id_str.replace("-100", ""):
-            return True
-        if chat_username and t_str.replace("@", "").lower() == chat_username:
-            return True
-    return False
-
-target_welcome_groups = parse_chats(RECORD_JOIN)
-accept_request_groups = parse_chats(ACCEPT_REQUEST)
-add_to_groups = parse_chats(ADD_TO_GROUP)
-
-parsed_sources = parse_chats(SOURCE_CHAT)
-source_chat_parsed = parsed_sources[0] if parsed_sources else None
-
-# ------------------------------------------------------------------------------
-# INITIALIZE CLIENTS
-# ------------------------------------------------------------------------------
-clients = []
-clients_configs = []
-
-for idx, acc_info in enumerate(accounts_config, start=1):
-    is_primary = (acc_info['index'] == 1)
-    cli = Client(
-        f"telegram_client_{acc_info['index']}",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=acc_info["session"],
-        no_updates=not is_primary
-    )
-    clients.append(cli)
-    clients_configs.append(acc_info)
-
-primary_client = clients[0] if clients else None
-
-
-# ------------------------------------------------------------------------------
-# EVENT HANDLERS (PRIMARY CLIENT)
-# ------------------------------------------------------------------------------
-if primary_client:
-
-    @primary_client.on_message(filters.private & ~filters.me & filters.reply)
-    async def auto_delete_on_reply(client: Client, message: Message):
-        try:
-            await message.delete()
-            if message.reply_to_message:
-                await message.reply_to_message.delete()
-        except Exception:
-            pass
-
-    @primary_client.on_chat_join_request()
-    async def auto_accept_join_requests_handler(
-        client: Client, chat_join_request: ChatJoinRequest
-    ):
-        if not ACCEPT_TF:
-            return
-        chat = chat_join_request.chat
-        user = chat_join_request.from_user
-
-        if not is_chat_matched(chat, accept_request_groups):
-            return
-
-        try:
-            await client.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
-            await asyncio.sleep(random.uniform(3, 5))
-        except Exception:
-            pass
-
-    @primary_client.on_message()
-    async def real_time_join_listener(client: Client, message: Message):
-        try:
-            chat = message.chat
-            if not chat or not is_chat_matched(chat, target_welcome_groups):
-                return
-            
-            users_to_add = []
-            
-            if message.new_chat_members:
-                for u in message.new_chat_members:
-                    users_to_add.append(u)
-            
-            if message.from_user:
-                users_to_add.append(message.from_user)
-
-            for user in users_to_add:
-                if user.is_self or user.is_bot or user.is_deleted:
-                    continue
-                
-                async with file_lock:
-                    if target_welcome_groups:
-                        add_queue = safe_load_json(ADD_QUEUE_FILE, [])
-                        if not any(u["id"] == user.id for u in add_queue):
-                            add_queue.append(
-                                {
-                                    "id": user.id,
-                                    "username": user.username,
-                                    "first_name": user.first_name or "",
-                                }
-                            )
-                            safe_save_json(ADD_QUEUE_FILE, add_queue)
-        except Exception as ex:
-            pass
-
-    @primary_client.on_chat_member_updated()
-    async def chat_member_update_tracker(client: Client, cms: ChatMemberUpdated):
-        if cms.new_chat_member and cms.new_chat_member.status == enums.ChatMemberStatus.MEMBER:
-            if cms.old_chat_member is None or cms.old_chat_member.status in (
-                enums.ChatMemberStatus.LEFT,
-                enums.ChatMemberStatus.BANNED,
-                enums.ChatMemberStatus.RESTRICTED,
-            ):
-                chat = cms.chat
-                user = cms.new_chat_member.user
-
-                if user.is_self or user.is_bot:
-                    return
-
-                if not is_chat_matched(chat, target_welcome_groups):
-                    return
-
-                if user.id not in welcomed_users:
-                    welcomed_users.add(user.id)
-
-                    async with file_lock:
-                        if WELCOME_ENABLED:
-                            current_queue = safe_load_json(QUEUE_FILE, [])
-                            current_queue.append(
-                                {
-                                    "id": user.id,
-                                    "username": user.username,
-                                    "first_name": user.first_name or "",
-                                    "group_title": chat.title or "",
-                                }
-                            )
-                            safe_save_json(QUEUE_FILE, current_queue)
-
-                        if target_welcome_groups:
-                            add_queue = safe_load_json(ADD_QUEUE_FILE, [])
-                            if not any(u["id"] == user.id for u in add_queue):
-                                add_queue.append(
-                                    {
-                                        "id": user.id,
-                                        "username": user.username,
-                                        "first_name": user.first_name or "",
-                                    }
-                                )
-                                safe_save_json(ADD_QUEUE_FILE, add_queue)
-
-
-# ------------------------------------------------------------------------------
-# WORKER FUNCTIONS
-# ------------------------------------------------------------------------------
-
-async def source_chat_poller_worker(client: Client):
-    await asyncio.sleep(5)
-    while True:
-        if source_chat_parsed:
-            try:
-                fetched_msgs = []
-                async for message in client.get_chat_history(source_chat_parsed, limit=30):
-                    if not message.service and (message.text or message.caption or message.media):
-                        fetched_msgs.append({
-                            "id": message.id,
-                            "chat_id": message.chat.id,
-                            "text": message.text or message.caption or "Media/Post",
-                        })
-                fetched_msgs.reverse()
-
-                async with file_lock:
-                    msgs = safe_load_json(SOURCE_MESSAGES_FILE, [])
-                    existing_ids = {m["id"] for m in msgs}
-                    new_added = False
-                    for m in fetched_msgs:
-                        if m["id"] not in existing_ids:
-                            msgs.append(m)
-                            new_added = True
-                    
-                    if new_added:
-                        safe_save_json(SOURCE_MESSAGES_FILE, msgs)
-            except Exception as ex:
-                pass
-        await asyncio.sleep(5)
-
-
-async def scrape_members_worker(client: Client):
-    await asyncio.sleep(15)
-    while True:
-        try:
-            if not target_welcome_groups:
-                await asyncio.sleep(30)
-                continue
-
-            for g in target_welcome_groups:
-                try:
-                    async for message in client.get_chat_history(g, limit=500):
-                        users_to_add_list = []
-                        
-                        if message.from_user:
-                            users_to_add_list.append(message.from_user)
-                            
-                        if message.new_chat_members:
-                            for u in message.new_chat_members:
-                                users_to_add_list.append(u)
-
-                        for user in users_to_add_list:
-                            if user.is_self or user.is_bot or user.is_deleted:
-                                continue
-
-                            async with file_lock:
-                                if target_welcome_groups:
-                                    add_queue = safe_load_json(ADD_QUEUE_FILE, [])
-                                    if not any(u["id"] == user.id for u in add_queue):
-                                        add_queue.append(
-                                            {
-                                                "id": user.id,
-                                                "username": user.username,
-                                                "first_name": user.first_name or "",
-                                            }
-                                        )
-                                        safe_save_json(ADD_QUEUE_FILE, add_queue)
-
-                        await asyncio.sleep(0.01)
-
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 5)
-                except Exception as ex:
-                    pass
-
-                await asyncio.sleep(60)
-
-            await asyncio.sleep(3600)
-        except Exception:
-            await asyncio.sleep(30)
-
-
-async def welcome_queue_worker(client: Client):
-    while True:
-        try:
-            async with file_lock:
-                current_queue = safe_load_json(QUEUE_FILE, [])
-
-            if not current_queue or not WELCOME_ENABLED:
-                await asyncio.sleep(15)
-                continue
-
-            user_data = current_queue[0]
-            member_id = user_data["id"]
-            first_name = user_data.get("first_name", "")
-
-            try:
-                try:
-                    await client.get_users(member_id)
-                except Exception:
-                    async with file_lock:
-                        cq = safe_load_json(QUEUE_FILE, [])
-                        if cq:
-                            cq.pop(0)
-                            safe_save_json(QUEUE_FILE, cq)
-                    continue
-
-                await asyncio.sleep(2)
-                chosen_welcome_msg = random.choice(WELCOME_MESSAGES_LIST)
-                sent_msg = await client.send_message(
-                    chat_id=member_id, text=chosen_welcome_msg
-                )
-
-                async with file_lock:
-                    cq = safe_load_json(QUEUE_FILE, [])
-                    if cq:
-                        cq.pop(0)
-                        safe_save_json(QUEUE_FILE, cq)
-
-                await asyncio.sleep(60)
-                try:
-                    await sent_msg.delete(revoke=False)
-                except Exception:
-                    pass
-                await asyncio.sleep(600)
-
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 2)
-            except Exception:
-                async with file_lock:
-                    cq = safe_load_json(QUEUE_FILE, [])
-                    if cq:
-                        cq.pop(0)
-                        safe_save_json(QUEUE_FILE, cq)
-                await asyncio.sleep(5)
-        except Exception:
-            await asyncio.sleep(10)
-
-
-async def add_member_manager_task(allowed_clients_tuples):
-    current_acc_index = 0
-    total_clients = len(allowed_clients_tuples)
-    if total_clients == 0:
-        return
-
-    while True:
-        try:
-            if not add_to_groups:
-                await asyncio.sleep(30)
-                continue
-
-            today_str = datetime.now(ICT).strftime("%Y-%m-%d")
-
-            user_data = None
-            async with file_lock:
-                queue = safe_load_json(ADD_QUEUE_FILE, [])
-                if queue:
-                    user_data = queue.pop(0)
-                    safe_save_json(ADD_QUEUE_FILE, queue)
-
-            if not user_data:
-                await asyncio.sleep(15)
-                continue
-
-            user_id = user_data["id"]
-            username = user_data.get("username")
-            first_name = user_data.get("first_name", "")
-            target_user = f"@{username}" if username else user_id
-
-            added_success = False
-            skip_user_permanently = False
-
-            for attempt in range(total_clients):
-                acc_idx = (current_acc_index + attempt) % total_clients
-                cli, acc_info = allowed_clients_tuples[acc_idx]
-                acc_num = acc_info['index']
-                account_key = f"acc_{acc_num}"
-
-                async with file_lock:
-                    states = safe_load_json(ADD_DAILY_STATE_FILE, {})
-                    acc_state = states.get(account_key, {"date": today_str, "count": 0})
-                    if acc_state.get("date") != today_str:
-                        acc_state = {"date": today_str, "count": 0}
-                        states[account_key] = acc_state
-                        safe_save_json(ADD_DAILY_STATE_FILE, states)
-
-                current_acc_limit = account_custom_limits.get(acc_num, 30)
-
-                if acc_state["count"] >= current_acc_limit:
-                    continue
-
-                if acc_num in blocked_accounts:
-                    if datetime.now(ICT) < blocked_accounts[acc_num]:
-                        continue
-                    else:
-                        del blocked_accounts[acc_num]
-
-                try:
-                    user_obj = await cli.get_users(target_user)
-                    user_to_add = user_obj.id
-
-                    for g in add_to_groups:
-                        await cli.add_chat_members(g, user_to_add)
-                        added_success = True
-
-                    if added_success:
-                        async with file_lock:
-                            states = safe_load_json(ADD_DAILY_STATE_FILE, {})
-                            acc_st = states.get(account_key, {"date": today_str, "count": 0})
-                            acc_st["count"] += 1
-                            states[account_key] = acc_st
-                            safe_save_json(ADD_DAILY_STATE_FILE, states)
-
-                        current_acc_index = (acc_idx + 1) % total_clients
-                        break
-
-                except (PeerFlood, Exception) as ex:
-                    ex_str = str(ex)
-                    if "PEER_FLOOD" in ex_str or "400 PEER_FLOOD" in ex_str or isinstance(ex, PeerFlood):
-                        blocked_accounts[acc_num] = datetime.now(ICT) + timedelta(seconds=3600)
-                        continue
-                    elif isinstance(ex, (UserPrivacyRestricted, UserRestricted, UserNotMutualContact, UserAlreadyParticipant)):
-                        skip_user_permanently = True
-                        break
-                    else:
-                        continue
-
-            if not added_success and not skip_user_permanently:
-                async with file_lock:
-                    q = safe_load_json(ADD_QUEUE_FILE, [])
-                    q.insert(0, user_data)
-                    safe_save_json(ADD_QUEUE_FILE, q)
-                await asyncio.sleep(600)
-            else:
-                delay = random.randint(250, 400)
-                await asyncio.sleep(delay)
-
-        except Exception as e:
-            await asyncio.sleep(10)
-
-
-async def single_message_broadcaster_task(client: Client, acc_index: int, targets: list):
-    st = safe_load_json(BROADCASTER_STATE_FILE, {})
-    acc_st = st.get(f"acc_{acc_index}", {})
-
-    if isinstance(acc_st, int):
-        msg_counter = acc_st
-        saved_target_index = 0
-        wake_up_iso = None
-    else:
-        msg_counter = acc_st.get("msg_counter", 0)
-        saved_target_index = acc_st.get("target_index", 0)
-        wake_up_iso = acc_st.get("wake_up_time", None)
-
-    if wake_up_iso:
-        try:
-            wake_up_dt = datetime.fromisoformat(wake_up_iso)
-            now_dt = datetime.now(ICT)
-            if now_dt < wake_up_dt:
-                remaining_seconds = (wake_up_dt - now_dt).total_seconds()
-                await asyncio.sleep(remaining_seconds)
-        except Exception:
-            pass
-
-    if not targets:
-        return
-
-    if source_chat_parsed:
-        try:
-            initial_msgs = []
-            async for message in client.get_chat_history(source_chat_parsed, limit=50):
-                if not message.service and (message.text or message.caption or message.media):
-                    initial_msgs.append({
-                        "id": message.id,
-                        "chat_id": message.chat.id,
-                        "text": message.text or message.caption or "Media/Post",
-                    })
-            initial_msgs.reverse()
-            if initial_msgs:
-                async with file_lock:
-                    existing_msgs = safe_load_json(SOURCE_MESSAGES_FILE, [])
-                    if not existing_msgs:
-                        safe_save_json(SOURCE_MESSAGES_FILE, initial_msgs)
-        except Exception as ex:
-            pass
-
-    while True:
-        if not source_chat_parsed:
-            await asyncio.sleep(30)
-            continue
-
-        try:
-            async with file_lock:
-                messages_to_send = safe_load_json(SOURCE_MESSAGES_FILE, [])
-
-            if not messages_to_send:
-                await asyncio.sleep(60)
-                continue
-
-            msg_counter = msg_counter % len(messages_to_send)
-            target_msg_data = messages_to_send[msg_counter]
-            total_targets = len(targets)
-
-            if not targets:
-                await asyncio.sleep(300)
-                continue
-
-            start_t_index = saved_target_index + 1
-            if start_t_index > total_targets:
-                start_t_index = 1
-                saved_target_index = 0
-
-            t_index = start_t_index
-            skip_current_message = False
-
-            while t_index <= len(targets):
-                target = targets[t_index - 1]
-                success = False
-                attempts = 0
-                while not success and attempts < MAX_RETRIES:
-                    try:
-                        await client.copy_message(
-                            chat_id=target,
-                            from_chat_id=source_chat_parsed,
-                            message_id=target_msg_data["id"],
-                        )
-                        success = True
-
-                        async with file_lock:
-                            curr_st = safe_load_json(BROADCASTER_STATE_FILE, {})
-                            curr_st[f"acc_{acc_index}"] = {
-                                "msg_counter": msg_counter,
-                                "target_index": t_index,
-                                "wake_up_time": None
-                            }
-                            safe_save_json(BROADCASTER_STATE_FILE, curr_st)
-
-                        target_delay = random.randint(120, 150)
-                        await asyncio.sleep(target_delay)
-
-                    except FloodWait as e:
-                        attempts += 1
-                        await asyncio.sleep(e.value + 2)
-
-                    except MessageIdInvalid:
-                        async with file_lock:
-                            msgs = safe_load_json(SOURCE_MESSAGES_FILE, [])
-                            msgs = [m for m in msgs if m["id"] != target_msg_data["id"]]
-                            safe_save_json(SOURCE_MESSAGES_FILE, msgs)
-                        skip_current_message = True
-                        success = True
-                        break
-
-                    except (ChatWriteForbidden, UserBannedInChannel, ChatAdminRequired, ChannelPrivate, ChannelInvalid, PeerIdInvalid, UsernameInvalid, UsernameNotOccupied) as ex:
-                        try:
-                            await client.leave_chat(target)
-                        except Exception:
-                            pass
-                        
-                        if target in targets:
-                            targets.remove(target)
-                        
-                        success = True
-                        break
-
-                    except Exception as ex:
-                        break
-
-                if skip_current_message:
-                    break
-
-                if target in targets and success:
-                    if t_index % 3 == 0 and t_index < len(targets):
-                        pause_time = random.randint(130, 150)
-                        await asyncio.sleep(pause_time)
-                    t_index += 1
-
-            if not skip_current_message:
-                msg_counter += 1
-
-            saved_target_index = 0
-            async with file_lock:
-                curr_st = safe_load_json(BROADCASTER_STATE_FILE, {})
-                curr_st[f"acc_{acc_index}"] = {
-                    "msg_counter": msg_counter,
-                    "target_index": 0,
-                    "wake_up_time": None
-                }
-                safe_save_json(BROADCASTER_STATE_FILE, curr_st)
-
-        except Exception as e:
-            await asyncio.sleep(10)
-
-        wake_up_time = datetime.now(ICT) + timedelta(seconds=SLEEP_TIME)
-        
-        async with file_lock:
-            curr_st = safe_load_json(BROADCASTER_STATE_FILE, {})
-            curr_st[f"acc_{acc_index}"] = {
-                "msg_counter": msg_counter,
-                "target_index": saved_target_index,
-                "wake_up_time": wake_up_time.isoformat()
-            }
-            safe_save_json(BROADCASTER_STATE_FILE, curr_st)
-
-        await asyncio.sleep(SLEEP_TIME)
-
-
-# ------------------------------------------------------------------------------
-# MAIN ENTRYPOINT
-# ------------------------------------------------------------------------------
-async def main():
-    if not clients:
-        print("❌ សូមបញ្ចូល SESSION_STRING ឬ SESSION_STRING_{i} ក្នុង Environment Variables!")
-        return
-
-    # ប្រមូលគ្រប់ Chat IDs / Targets ทั้งหมดមក Pre-cache ទុកមុន
-    chats_to_cache = []
-    if target_welcome_groups:
-        chats_to_cache.extend(target_welcome_groups)
-    if accept_request_groups:
-        chats_to_cache.extend(accept_request_groups)
-    if add_to_groups:
-        chats_to_cache.extend(add_to_groups)
-    if source_chat_parsed:
-        chats_to_cache.append(source_chat_parsed)
-    for cfg in accounts_config:
-        if cfg.get('targets'):
-            chats_to_cache.extend(cfg['targets'])
-    chats_to_cache = list(set(chats_to_cache))
-
-    valid_clients = []
-    for idx, (cli, cfg) in enumerate(clients, start=1):
-        try:
-            await cli.start()
-            me = await cli.get_me()
-            valid_clients.append((cli, cfg))
-            print(f"✅ Client #{cfg['index']} Logged in: {me.first_name} (@{me.username or 'No Username'}) -> Target: {cfg['targets']}")
-
-            # 🛠️ បង្ខំឱ្យ Client Resolve និង Cache Peer ID របស់ Groups ទាំងអស់ទុកមុន
-            for chat in chats_to_cache:
-                try:
-                    await cli.get_chat(chat)
-                except Exception:
-                    pass
-
-            # 🛠️ ទាញ Dialogs ចំនួន ១០០០ ដើម្បី Cache រាល់ Group ធំៗក្នុង SQLite Database
-            try:
-                async for dialog in cli.get_dialogs(limit=1000):
-                    pass
-                print(f"📂 Client #{cfg['index']} Cached dialogs successfully!")
-            except Exception as e:
-                print(f"⚠️ Warning loading dialogs for Client #{cfg['index']}: {e}")
-
-        except Exception as e:
-            print(f"❌ បរាជ័យក្នុងការ Login Client #{cfg['index']}: {e}")
-
-    if not valid_clients:
-        print("❌ គ្មាន Client ណាមួយអាច Login ได้ឡើយ! កម្មវិធីត្រូវបានបិទ។")
-        return
-
-    t_now = datetime.now(ICT).strftime("%Y-%m-%d %I:%M:%S %p")
-    print(f"\n[{t_now}] 🤖 ប្រព័ន្ធដំណើរការជាមួយ Accounts ទាំងអស់ដោយរលូន!")
-
-    if valid_clients:
-        first_cli = valid_clients[0][0]
-        asyncio.create_task(source_chat_poller_worker(first_cli))
-        asyncio.create_task(scrape_members_worker(first_cli))
-        asyncio.create_task(welcome_queue_worker(first_cli))
-
-        adder_clients_tuples = []
-        for cli, cfg in valid_clients:
-            acc_num = cfg['index']
-            if not allowed_add_accounts or acc_num in allowed_add_accounts:
-                adder_clients_tuples.append((cli, cfg))
-
-        if adder_clients_tuples:
-            print(f"👥 Accounts ដែលត្រូវបានកំណត់ឱ្យទាញសមាជិក (Add Members): {[cfg['index'] for _, cfg in adder_clients_tuples]}")
-            asyncio.create_task(add_member_manager_task(adder_clients_tuples))
-        else:
-            print("⚠️ គ្មាន Account ណាត្រូវបានកំណត់ឱ្យទាញសមាជិក (Add Members) ទេ។")
-
-        for cli, cfg in valid_clients:
-            asyncio.create_task(single_message_broadcaster_task(cli, cfg["index"], cfg["targets"]))
-
-    await asyncio.Event().wait()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("\n👋 បិទកម្មវិធីដោយជោគជ័យ!")
+    // MIGRATION: ប្រសិនបើ pendingRequests ធ្លាប់ជា Array ត្រូវបំប្លែងជា Object វិញស្វ័យប្រវត្តិ
+    for (const chatId in memoryDB.pendingRequests) {
+      if (Array.isArray(memoryDB.pendingRequests[chatId])) {
+        const oldArray = memoryDB.pendingRequests[chatId];
+        memoryDB.pendingRequests[chatId] = {};
+        oldArray.forEach(userId => {
+          memoryDB.pendingRequests[chatId][userId.toString()] = {
+            id: userId,
+            firstName: "User",
+            username: "unknown"
+          };
+        });
+      }
+    }
+
+    if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
+    if (!memoryDB.recentMsgIds) memoryDB.recentMsgIds = {};
+  } catch (e) {
+    console.error("Error reading dbFile:", e);
+  }
+}
+
+async function initDB() {
+  if (pool) {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS system_store (
+          id INT PRIMARY KEY DEFAULT 1,
+          data JSONB NOT NULL
+        );
+      `);
+      const res = await pool.query(`SELECT data FROM system_store WHERE id = 1;`);
+      if (res.rows.length > 0) {
+        memoryDB = res.rows[0].data;
+        if (!memoryDB.settings) memoryDB.settings = { exchangeRate: 4045, isAutoRate: true, defaultDeliveryFee: null };
+        if (!memoryDB.allowedUsers) memoryDB.allowedUsers = {};
+        if (!memoryDB.pendingRequests) memoryDB.pendingRequests = {};
+
+        // MIGRATION សម្រាប់ PostgreSQL
+        for (const chatId in memoryDB.pendingRequests) {
+          if (Array.isArray(memoryDB.pendingRequests[chatId])) {
+            const oldArray = memoryDB.pendingRequests[chatId];
+            memoryDB.pendingRequests[chatId] = {};
+            oldArray.forEach(userId => {
+              memoryDB.pendingRequests[chatId][userId.toString()] = {
+                id: userId,
+                firstName: "User",
+                username: "unknown"
+              };
+            });
+          }
+        }
+
+        if (!memoryDB.groupTitles) memoryDB.groupTitles = {};
+        if (!memoryDB.recentMsgIds) memoryDB.recentMsgIds = {};
+        console.log("Database restored successfully from PostgreSQL!");
+      } else {
+        await pool.query(`INSERT INTO system_store (id, data) VALUES (1, $1);`, [JSON.stringify(memoryDB)]);
+      }
+    } catch (err) {
+      console.error("PostgreSQL Init Error:", err.message);
+    }
+  }
+}
+
+function getDatabase() {
+  return memoryDB;
+}
+
+async function saveDatabase(data) {
+  memoryDB = data;
+  try {
+    fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
+  } catch (e) {}
+
+  if (pool) {
+    try {
+      await pool.query(
+        `INSERT INTO system_store (id, data) VALUES (1, $1) 
+         ON CONFLICT (id) DO UPDATE SET data = $1;`,
+        [JSON.stringify(data)]
+      );
+    } catch (err) {
+      console.error("PostgreSQL Save Error:", err.message);
+    }
+  }
+}
+
+async function fetchLiveExchangeRate() {
+  const db = getDatabase();
+  if (db.settings && db.settings.isAutoRate === false) return;
+
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await res.json();
+    if (data && data.rates && data.rates.KHR) {
+      const liveRate = Math.round(data.rates.KHR);
+      db.settings.exchangeRate = liveRate;
+      await saveDatabase(db);
+    }
+  } catch (err) {
+    console.error("Error fetching live exchange rate:", err.message);
+  }
+}
+
+// --- 3. TELEGRAM COMMAND MENU ---
+async function setupCommandsMenu() {
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'ចាប់ផ្តើមប្រើប្រាស់ Bot' },
+      { command: 'delete', description: 'លុបសារក្នុង Group/Channel' },
+      { command: 'accept', description: 'ជ្រើសរើស Group ដើម្បី Approve Join Requests' },
+      { command: 'rate', description: 'កំណត់អត្រាប្តូរប្រាក់ (Rate Buttons)' },
+      { command: 'delivery', description: 'កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Buttons)' }
+    ]);
+  } catch (err) {
+    console.error("Error setting commands menu:", err.message);
+  }
+}
+
+// --- 4. RECORD ALL MESSAGES, JOIN REQUESTS, AND TITLES ---
+bot.on('chat_join_request', async (ctx) => {
+  try {
+    const chatId = ctx.chatJoinRequest.chat.id.toString();
+    const chatTitle = ctx.chatJoinRequest.chat.title || "Group/Channel";
+    const user = ctx.chatJoinRequest.from;
+
+    const db = getDatabase();
+    if (!db.pendingRequests[chatId]) db.pendingRequests[chatId] = {};
+    db.groupTitles[chatId] = chatTitle;
+
+    // រក្សាទុកជា Object តាមរយៈ userId ផ្ទាល់ ការពារការបាត់បង់សមាជិក
+    db.pendingRequests[chatId][user.id.toString()] = {
+      id: user.id,
+      firstName: user.first_name || "No Name",
+      username: user.username ? `@${user.username}` : "អត់មាន Username"
+    };
+
+    await saveDatabase(db);
+  } catch (err) {
+    console.error("Error saving chat_join_request:", err.message);
+  }
+});
+
+bot.use(async (ctx, next) => {
+  if (ctx.chat && (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup' || ctx.chat.type === 'channel')) {
+    const chatId = ctx.chat.id.toString();
+    const chatTitle = ctx.chat.title || "Group/Channel";
+    const db = getDatabase();
+
+    db.groupTitles[chatId] = chatTitle;
+
+    if (ctx.message && ctx.message.message_id) {
+      if (!db.recentMsgIds[chatId]) db.recentMsgIds[chatId] = [];
+      if (!db.recentMsgIds[chatId].includes(ctx.message.message_id)) {
+        db.recentMsgIds[chatId].push(ctx.message.message_id);
+        if (db.recentMsgIds[chatId].length > 1000) {
+          db.recentMsgIds[chatId].shift();
+        }
+        await saveDatabase(db);
+      }
+    }
+  }
+  return next();
+});
+
+// --- 5. /DELETE COMMAND ---
+bot.command('delete', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /delete នេះទេ!");
+  }
+
+  const db = getDatabase();
+  const knownChats = Object.keys(db.groupTitles);
+
+  if (knownChats.length === 0) {
+    return ctx.reply("ℹ️ បច្ចុប្បន្នមិនទាន់មាន Group ឬ Channel ណាដែលស្គាល់ក្នុងប្រព័ន្ធឡើយ!");
+  }
+
+  const buttons = knownChats.map((chatId) => {
+    const title = db.groupTitles[chatId] || `Chat ${chatId}`;
+    return [Markup.button.callback(`🗑️ ${title}`, `confirm_delete:${chatId}`)];
+  });
+
+  return ctx.reply("👇 សូមជ្រើសរើស Group ឬ Channel ដែលអ្នកចង់លុបសារទាំងអស់ (Photos, Videos, Voices, Chats...) ៖", Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^confirm_delete:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+  const db = getDatabase();
+  const targetTitle = db.groupTitles[chatId] || "Group/Channel";
+
+  return ctx.editMessageText(
+    `⚠️ **តើអ្នកប្រាកដដែរឬទេថាចង់លុបសារទាំងអស់ក្នុង "${targetTitle}"?**\n\nសាររួមមាន៖ រូបភាព, វីដេអូ, ឆាត, សំឡេង, និង Sticker ទាំងអស់។`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("✅ ប្រាកដ (លុបទាំងអស់)", `exec_delete:${chatId}`),
+        Markup.button.callback("❌ បោះបង់", "cancel_delete")
+      ]
+    ])
+  );
+});
+
+bot.action("cancel_delete", async (ctx) => {
+  await ctx.answerCbQuery("បានបោះបង់!");
+  return ctx.editMessageText("❌ បានបោះបង់ប្រតិបត្តិការលុបសារ!");
+});
+
+bot.action(/^exec_delete:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+  const db = getDatabase();
+  const targetTitle = db.groupTitles[chatId] || "Group/Channel";
+
+  await ctx.editMessageText(`⏳ **កំពុងចាប់ផ្តើមលុបសារទាំងអស់ក្នុង "${targetTitle}"...**`);
+
+  let deletedCount = 0;
+  let failedCount = 0;
+
+  const trackedMsgIds = db.recentMsgIds[chatId] || [];
+  
+  if (trackedMsgIds.length > 0) {
+    for (const msgId of trackedMsgIds) {
+      try {
+        await ctx.telegram.deleteMessage(chatId, msgId);
+        deletedCount++;
+      } catch (e) {
+        failedCount++;
+      }
+      await new Promise(r => setTimeout(r, 40));
+    }
+  } else {
+    try {
+      const topMsg = await ctx.telegram.sendMessage(chatId, "🧹 Cleaning...");
+      const topId = topMsg.message_id;
+      await ctx.telegram.deleteMessage(chatId, topId);
+
+      for (let id = topId - 1; id >= Math.max(1, topId - 300); id--) {
+        try {
+          await ctx.telegram.deleteMessage(chatId, id);
+          deletedCount++;
+        } catch (e) {
+          failedCount++;
+        }
+        await new Promise(r => setTimeout(r, 40));
+      }
+    } catch (err) {
+      console.error("Delete Error:", err.message);
+    }
+  }
+
+  db.recentMsgIds[chatId] = [];
+  await saveDatabase(db);
+
+  return ctx.telegram.editMessageText(
+    ctx.chat.id,
+    ctx.callbackQuery.message.message_id,
+    null,
+    `✅ **លុបសារបានជោគជ័យ!**\n\n📌 **Group/Channel:** ${targetTitle}\n🗑️ ចំនួនសារដែលបានលុប៖ **${deletedCount}**`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// --- 6. /RATE BUTTON MENU ---
+bot.command('rate', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+  }
+
+  const currentRateMode = db.settings.isAutoRate ? "Live ធនាគារ (Auto)" : `${db.settings.exchangeRate} KHR (Manual)`;
+
+  return ctx.reply(
+    `💱 **កំណត់អត្រាប្តូរប្រាក់ (Exchange Rate)**\n\nអត្រាបច្ចុប្បន្ន៖ **1 USD = ${db.settings.exchangeRate} KHR** (${currentRateMode})\n\nសូមជ្រើសរើស Option ខាងក្រោម ឬវាយត្រង់ /rate4080 (តាមចិត្ត)៖`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🏦 Bank Live Rate (ស្វ័យប្រវត្តិ)", "set_rate:bank")],
+      [
+        Markup.button.callback("4000 ៛", "set_rate:4000"),
+        Markup.button.callback("4050 ៛", "set_rate:4050"),
+        Markup.button.callback("4100 ៛", "set_rate:4100")
+      ],
+      [
+        Markup.button.callback("4120 ៛", "set_rate:4120"),
+        Markup.button.callback("4150 ៛", "set_rate:4150"),
+        Markup.button.callback("4200 ៛", "set_rate:4200")
+      ]
+    ])
+  );
+});
+
+bot.action(/^set_rate:(.+)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const db = getDatabase();
+
+  if (choice === 'bank') {
+    db.settings.isAutoRate = true;
+    await saveDatabase(db);
+    await fetchLiveExchangeRate();
+    await ctx.answerCbQuery("បានកំណត់ប្រើ Bank Live Rate!");
+    return ctx.editMessageText(`🔄 **បានកំណត់ប្រើ Live Rate ធនាគារស្វ័យប្រវត្តិ!**\n\nRate បច្ចុប្បន្ន៖ **1 USD = ${db.settings.exchangeRate} KHR**`);
+  } else {
+    const customRate = parseFloat(choice);
+    db.settings.isAutoRate = false;
+    db.settings.exchangeRate = customRate;
+    await saveDatabase(db);
+    await ctx.answerCbQuery(`បានកំណត់ Rate ${customRate} KHR!`);
+    return ctx.editMessageText(`✅ **បានកំណត់ Rate ដោយខ្លួនឯង៖**\n\n1 USD = **${customRate} KHR**`);
+  }
+});
+
+// --- 7. /DELIVERY BUTTON MENU ---
+bot.command('delivery', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+  }
+
+  const currentDel = db.settings.defaultDeliveryFee === null 
+    ? "គិតតាម Order ដើម (Auto)" 
+    : `$${db.settings.defaultDeliveryFee.toFixed(2)}`;
+
+  return ctx.reply(
+    `🚚 **កំណត់ថ្លៃដឹកជញ្ជូន (Delivery Fee)**\n\nថ្លៃដឹកបច្ចុប្បន្ន៖ **${currentDel}**\n\nសូមជ្រើសរើស Option ខាងក្រោម ឬវាយត្រង់ /delivery2.5 (តាមចិត្ត)៖`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🆓 Free ($0.00)", "set_del:0")],
+      [
+        Markup.button.callback("🚚 $1.00", "set_del:1"),
+        Markup.button.callback("🚚 $1.25", "set_del:1.25"),
+        Markup.button.callback("🚚 $1.50", "set_del:1.5")
+      ],
+      [
+        Markup.button.callback("🚚 $1.75", "set_del:1.75"),
+        Markup.button.callback("🚚 $2.00", "set_del:2"),
+        Markup.button.callback("🚚 $2.50", "set_del:2.5")
+      ],
+      [Markup.button.callback("🔄 គិតតាម Order អត្ថបទដើម", "set_del:auto")]
+    ])
+  );
+});
+
+bot.action(/^set_del:(.+)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const db = getDatabase();
+
+  if (choice === 'auto') {
+    db.settings.defaultDeliveryFee = null;
+    await saveDatabase(db);
+    await ctx.answerCbQuery("កំណត់គិតតាម Order ដើម!");
+    return ctx.editMessageText(`🔄 **ថ្លៃដឹកជញ្ជូននឹងគិតតាមការវាយបញ្ចូលក្នុង Order អត្ថបទដើមវិញ!**`);
+  } else {
+    const customDel = parseFloat(choice);
+    db.settings.defaultDeliveryFee = customDel;
+    await saveDatabase(db);
+    await ctx.answerCbQuery(`បានកំណត់ថ្លៃដឹក $${customDel.toFixed(2)}!`);
+    return ctx.editMessageText(`🚚 **បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDel.toFixed(2)}**`);
+  }
+});
+
+// --- 8. /ACCEPT COMMAND ---
+bot.command('accept', async (ctx) => {
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command /accept នេះទេ!");
+  }
+
+  const db = getDatabase();
+  const pendingGroups = Object.keys(db.pendingRequests).filter(
+    (chatId) => db.pendingRequests[chatId] && Object.keys(db.pendingRequests[chatId]).length > 0
+  );
+
+  if (pendingGroups.length === 0) {
+    return ctx.reply("ℹ️ បច្ចុប្បន្នមិនមាន Group ណាដែលមាន Join Request មកទេ!");
+  }
+
+  const buttons = pendingGroups.map((chatId) => {
+    const title = db.groupTitles[chatId] || `Group ${chatId}`;
+    const count = Object.keys(db.pendingRequests[chatId]).length;
+    return [Markup.button.callback(`👥 ${title} (${count.toLocaleString()} នាក់)`, `approve_group:${chatId}`)];
+  });
+
+  return ctx.reply("👇 សូមជ្រើសរើស Group ដែលអ្នកចង់ Approve Join Requests៖", Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^approve_group:(.+)$/, async (ctx) => {
+  const chatId = ctx.match[1];
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  if (!isAdmin) {
+    return ctx.answerCbQuery("❌ អ្នកគ្មានសិទ្ធិ!", { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+
+  const db = getDatabase();
+  const requestsObj = db.pendingRequests[chatId] || {};
+  const userIds = Object.keys(requestsObj);
+  const totalRequests = userIds.length;
+  const targetTitle = db.groupTitles[chatId] || "Group";
+
+  if (totalRequests === 0) {
+    return ctx.editMessageText(`ℹ️ មិនមាន Join Request ណាមួយដែលកំពុងរង់ចាំក្នុង Group "${targetTitle}" ឡើយ!`);
+  }
+
+  await ctx.editMessageText(
+    `🛡️ **ចាប់ផ្តើមដំណើរការប្រព័ន្ធសុវត្ថិភាព Anti-Spam...**\n\nកំពុង Approve សមាជិកចំនួន **${totalRequests.toLocaleString()} នាក់** ក្នុង Group "${targetTitle}"...`
+  );
+
+  let approvedCount = 0;
+  let failedCount = 0;
+  const batchSize = 50;
+
+  for (let i = 0; i < totalRequests; i++) {
+    const userId = userIds[i];
+    try {
+      await ctx.telegram.approveChatJoinRequest(chatId, userId);
+      approvedCount++;
+    } catch (err) {
+      failedCount++;
+      if (err.message && err.message.includes('429')) {
+        console.log("Telegram Rate Limit Hit! Pausing 30 seconds for safety...");
+        await new Promise((r) => setTimeout(r, 30000));
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    if ((i + 1) % batchSize === 0 || i === totalRequests - 1) {
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          ctx.callbackQuery.message.message_id,
+          null,
+          `⏳ **កំពុងរត់ក្នុងទម្រង់ Safe Anti-Spam Mode...**\n\n📌 **Group:** ${targetTitle}\n✅ ជោគជ័យ: **${approvedCount.toLocaleString()} / ${totalRequests.toLocaleString()}** នាក់\n❌ បរាជ័យ: **${failedCount}** នាក់\n☕ *សម្រាក ១០ វិនាទី ការពារ Telegram Spam...*`
+        );
+      } catch (e) {}
+      await new Promise((r) => setTimeout(r, 10000));
+    }
+  }
+
+  db.pendingRequests[chatId] = {};
+  await saveDatabase(db);
+
+  return ctx.telegram.editMessageText(
+    ctx.chat.id,
+    ctx.callbackQuery.message.message_id,
+    null,
+    `🎉 **បញ្ចប់ដំណើរការដោយជោគជ័យ និងសុវត្ថិភាព ១០០%!**\n\n📌 **Group:** ${targetTitle}\n✅ បាន Approve សរុប: **${approvedCount.toLocaleString()} នាក់**\n❌ បរាជ័យ: **${failedCount} នាក់**`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// --- 9. DYNAMIC REGEX COMMANDS ---
+bot.use(async (ctx, next) => {
+  if (!ctx.message || !ctx.message.text) return next();
+  const text = ctx.message.text.trim();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  const rateMatch = text.match(/^\/rate(\d+)$/i);
+  if (rateMatch && isAllowed) {
+    const customRate = parseFloat(rateMatch[1]);
+    db.settings.isAutoRate = false;
+    db.settings.exchangeRate = customRate;
+    await saveDatabase(db);
+    return ctx.reply(`✅ បានកំណត់ Rate ដោយខ្លួនឯង៖ 1 USD = ${customRate} KHR`);
+  }
+
+  const delMatch = text.match(/^\/delivery([\d\.]+)$/i);
+  if (delMatch && isAllowed) {
+    const customDelivery = parseFloat(delMatch[1]);
+    db.settings.defaultDeliveryFee = customDelivery;
+    await saveDatabase(db);
+    return ctx.reply(`🚚 បានកំណត់ថ្លៃដឹកជញ្ជូនស្វ័យប្រវត្តិ៖ $${customDelivery.toFixed(2)}`);
+  }
+
+  return next();
+});
+
+// --- 10. START COMMAND HANDLER ---
+bot.start(async (ctx) => {
+  return ctx.reply("សូមចុចប៊ូតុង 🛍️ Shop now ដើម្បីទិញផលិតផល!");
+});
+
+// --- 11. AUTHORIZATION MIDDLEWARE ---
+bot.use(async (ctx, next) => {
+  if (!ctx.message || !ctx.message.text) return next();
+  const text = ctx.message.text.trim();
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+
+  const addMatch = text.match(/^\/([a-zA-Z0-9_]+)$/);
+  if (addMatch) {
+    const targetUser = addMatch[1].toLowerCase();
+    const systemCmds = ['start', 'accept', 'delete', 'rate', 'delivery'];
+    
+    if (!systemCmds.includes(targetUser) && !targetUser.startsWith('rate') && !targetUser.startsWith('delivery') && !targetUser.startsWith('un')) {
+      if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិផ្ដល់សិទ្ធិឲ្យ User ផ្សេងទេ!");
+      db.allowedUsers[targetUser] = true;
+      await saveDatabase(db);
+      return ctx.reply(`✅ បានអនុញ្ញាតឱ្យ @${addMatch[1]} ប្រើប្រាស់ Bot រហូតរៀងទៅ!`);
+    }
+  }
+
+  const removeMatch = text.match(/^\/un([a-zA-Z0-9_]+)$/i);
+  if (removeMatch) {
+    if (!isAdmin) return ctx.reply("❌ អ្នកគ្មានសិទ្ធិប្រើប្រាស់ Command នេះទេ!");
+    const targetUser = removeMatch[1].toLowerCase();
+    if (db.allowedUsers[targetUser]) {
+      delete db.allowedUsers[targetUser];
+      await saveDatabase(db);
+      return ctx.reply(`❌ បានលុបសិទ្ធិប្រើប្រាស់របស់ @${removeMatch[1]} រួចរាល់!`);
+    } else {
+      return ctx.reply(`⚠️ មិនមានឈ្មោះ @${removeMatch[1]} ក្នុងបញ្ជីសិទ្ធិស្រាប់ទេ!`);
+    }
+  }
+
+  return next();
+});
+
+// --- 12. GROUP MODERATION ---
+bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {}
+});
+
+bot.on('message', async (ctx, next) => {
+  if (!ctx.chat || (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup')) {
+    return next();
+  }
+
+  try {
+    const member = await ctx.getChatMember(ctx.from.id);
+    const isAdminOrOwner = ['administrator', 'creator'].includes(member.status);
+
+    if (!isAdminOrOwner) {
+      const text = ctx.message.text || ctx.message.caption || '';
+      const hasEntities = ctx.message.entities || ctx.message.caption_entities || [];
+      const isLink = hasEntities.some(e => e.type === 'url' || e.type === 'text_link') || /https?:\/\/[^\s]+/gi.test(text);
+
+      if (isLink) {
+        await ctx.deleteMessage();
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("Group Moderation Error:", err.message);
+  }
+
+  return next();
+});
+
+// --- 13. ORDER PARSER ---
+function parseOrderText(text) {
+  try {
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+    let shopName = "Oneday Clothing";
+    let name = "អតិថិជន";
+    let phone = "";
+    let address = "ភ្នំពេញ";
+    let mapUrl = "";
+    let items = [];
+    let deliveryFee = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      if (line.includes('— Order') || line.includes('– Order')) {
+        shopName = line.split(/[—–]/)[0].replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+      }
+
+      if (line.includes('ឈ្មោះ:')) {
+        name = line.replace(/^[•\-\*]\s*ឈ្មោះ:\s*/, '').trim();
+      }
+      if (line.includes('លេខទូរស័ព្ទ:')) {
+        phone = line.replace(/^[•\-\*]\s*លេខទូរស័ព្ទ:\s*/, '').trim();
+      }
+      if (line.includes('ទីតាំង:') || line.includes('អាសយដ្ឋាន:')) {
+        address = line.replace(/^[•\-\*]\s*(ទីតាំង|អាសយដ្ឋាន):\s*/, '').trim();
+      }
+      if (line.includes('ទីតាំង Map:') || line.includes('Map:')) {
+        mapUrl = line.replace(/^[•\-\*]\s*(ទីតាំង Map|Map):\s*/, '').trim();
+      }
+
+      if (line.includes('ដឹកជញ្ជូន')) {
+        let feeMatch = line.match(/\$([\d\.]+)/);
+        if (feeMatch) {
+          deliveryFee = parseFloat(feeMatch[1]) || 0;
+        }
+      }
+
+      const itemMatch = line.match(/^\d+\.\s+(.+)$/);
+      if (itemMatch && !line.includes('សរុប')) {
+        let itemName = itemMatch[1].trim();
+        let size = "គ្មាន";
+        let qty = 1;
+        let price = 0;
+
+        if (i + 1 < lines.length && (lines[i + 1].includes('Size:') || lines[i + 1].includes('×'))) {
+          let nextLine = lines[i + 1];
+          i++;
+          let sizeMatch = nextLine.match(/Size:\s*([^×]+)×\s*([\d\.]+)\s*—\s*\$([\d\.]+)/i);
+          if (sizeMatch) {
+            size = sizeMatch[1].trim();
+            qty = parseFloat(sizeMatch[2]) || 1;
+            let totalPriceItem = parseFloat(sizeMatch[3]) || 0;
+            price = qty > 0 ? totalPriceItem / qty : totalPriceItem;
+          }
+        }
+        items.push({ name: itemName, size, qty, price, total: qty * price });
+      }
+    }
+
+    const db = getDatabase();
+    if (db.settings && db.settings.defaultDeliveryFee !== null && db.settings.defaultDeliveryFee !== undefined) {
+      deliveryFee = db.settings.defaultDeliveryFee;
+    }
+
+    let subtotal = items.reduce((sum, item) => sum + item.total, 0);
+    let grandTotal = subtotal + deliveryFee;
+
+    return { shopName, name, phone, address, mapUrl, currency: "USD", items, subtotal, deliveryFee, grandTotal };
+  } catch (err) {
+    console.error("Parse Error:", err);
+    return null;
+  }
+}
+
+function wrapText(ctx, text, maxWidth) {
+  const words = text.split(' ');
+  let lines = [];
+  let currentLine = words[0];
+
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    const width = ctx.measureText(currentLine + " " + word).width;
+    if (width < maxWidth) {
+      currentLine += " " + word;
+    } else {
+      lines.push(currentLine);
+      currentLine = word;
+    }
+  }
+  lines.push(currentLine);
+  return lines;
+}
+
+// --- 14. CANVAS RENDERER ---
+function renderSinglePage(data, pageItems, startIndex, pageNum, totalPages, exchangeRate) {
+  return new Promise((resolve) => {
+    const scale = 3.5;
+    const baseWidth = 850;
+    const isFirstPage = pageNum === 1;
+    const isLastPage = pageNum === totalPages;
+    const font = 'KhmerFont, sans-serif';
+    
+    const canvasTemp = createCanvas(baseWidth * scale, 100 * scale);
+    const ctxTemp = canvasTemp.getContext('2d');
+    ctxTemp.font = `bold 16px ${font}`;
+
+    let totalItemsHeight = 0;
+    pageItems.forEach(item => {
+      const wrapped = wrapText(ctxTemp, item.name, 220);
+      totalItemsHeight += Math.max(wrapped.length * 24, 38) + 16;
+    });
+
+    const hasMap = !!data.mapUrl;
+    const customerInfoExtraHeight = hasMap ? 30 : 0;
+
+    const baseHeight = isFirstPage 
+      ? (isLastPage ? 260 + totalItemsHeight + 350 + customerInfoExtraHeight : 200 + totalItemsHeight + 200 + customerInfoExtraHeight)
+      : (isLastPage ? 180 + totalItemsHeight + 350 : 120 + totalItemsHeight + 150);
+
+    const canvas = createCanvas(baseWidth * scale, baseHeight * scale);
+    const ctx = canvas.getContext('2d');
+
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, baseWidth, baseHeight);
+
+    ctx.fillStyle = '#0284c7';
+    ctx.fillRect(0, 0, baseWidth, 12);
+
+    const headerTitle = data.shopName ? data.shopName.toUpperCase() : 'INVOICE';
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold 30px ${font}`;
+    ctx.fillText(headerTitle, 50, 62, 450);
+
+    ctx.fillStyle = '#1e293b';
+    ctx.font = `bold 15px ${font}`;
+    ctx.fillText('Official Purchase Invoice / វិក្កយបត្របញ្ជាទិញ', 50, 88);
+
+    ctx.fillStyle = '#0284c7';
+    ctx.font = `bold 18px ${font}`;
+    ctx.textAlign = 'right';
+    ctx.fillText('#INV-' + data.invoiceNum + (totalPages > 1 ? ' (Page ' + pageNum + '/' + totalPages + ')' : ''), 750, 60);
+
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold 15px ${font}`;
+    ctx.fillText('Date: ' + data.orderDate + ', ' + data.timeStr, 750, 85);
+
+    ctx.textAlign = 'left';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(50, 110);
+    ctx.lineTo(750, 110);
+    ctx.stroke();
+
+    let startY = 125;
+    if (isFirstPage) {
+      ctx.fillStyle = '#000000';
+      ctx.font = `bold 17px ${font}`;
+      ctx.fillText('ឈ្មោះអតិថិជន៖ ' + data.name, 50, 142);
+      ctx.fillText('លេខទូរស័ព្ទ៖ ' + data.phone, 50, 172);
+      ctx.fillText('អាសយដ្ឋាន៖ ' + data.address, 50, 202);
+      
+      if (hasMap) {
+        ctx.fillStyle = '#0284c7';
+        ctx.fillText('ទីតាំង Map៖ ' + data.mapUrl, 50, 232);
+        startY = 265;
+      } else {
+        startY = 235;
+      }
+    }
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(50, startY, 700, 42);
+
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold 16px ${font}`;
+    ctx.fillText('No.', 65, startY + 27);
+    ctx.fillText('ទំនិញ / Details', 120, startY + 27);
+    ctx.fillText('ទំហំ', 370, startY + 27);
+    ctx.fillText('ចំនួន', 440, startY + 27);
+    ctx.fillText('តម្លៃ/ឯកតា', 515, startY + 27);
+    ctx.textAlign = 'right';
+    ctx.fillText('សរុប', 720, startY + 27);
+
+    startY += 47;
+    ctx.font = `bold 16px ${font}`;
+
+    pageItems.forEach((item, index) => {
+      const wrappedLines = wrapText(ctx, item.name, 230);
+      const rowHeight = Math.max(wrappedLines.length * 24, 38) + 16;
+      const textCenterY = startY + (rowHeight / 2) + 5;
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#000000';
+      
+      ctx.fillText((startIndex + index + 1).toString(), 65, textCenterY);
+
+      const startTextY = textCenterY - (((wrappedLines.length - 1) * 24) / 2);
+      wrappedLines.forEach((lineText, lineIdx) => {
+        ctx.fillText(lineText, 120, startTextY + (lineIdx * 24));
+      });
+
+      ctx.fillText(item.size, 370, textCenterY);
+      ctx.fillText(item.qty.toString(), 440, textCenterY);
+
+      let itemPriceText = '$' + parseFloat(item.price).toFixed(2);
+      let itemTotalText = '$' + parseFloat(item.total).toFixed(2);
+
+      ctx.fillText(itemPriceText, 515, textCenterY);
+      ctx.textAlign = 'right';
+      ctx.fillText(itemTotalText, 720, textCenterY);
+
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(50, startY + rowHeight);
+      ctx.lineTo(750, startY + rowHeight);
+      ctx.stroke();
+
+      startY += rowHeight;
+    });
+
+    if (isLastPage) {
+      startY += 10;
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(50, startY);
+      ctx.lineTo(750, startY);
+      ctx.stroke();
+
+      startY += 30;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#0f172a';
+      ctx.font = `bold 17px ${font}`;
+      ctx.fillText('ថ្លៃទំនិញសរុប (Subtotal):', 50, startY);
+      ctx.textAlign = 'right';
+      ctx.fillText('$' + data.subtotal.toFixed(2), 720, startY);
+
+      startY += 28;
+      ctx.textAlign = 'left';
+      ctx.fillText('ថ្លៃដឹកជញ្ជូន (Delivery Fee):', 50, startY);
+      ctx.textAlign = 'right';
+      ctx.fillText('$' + data.deliveryFee.toFixed(2), 720, startY);
+
+      startY += 32;
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(50, startY);
+      ctx.lineTo(750, startY);
+      ctx.stroke();
+
+      let usdVal = '$' + data.grandTotal.toFixed(2);
+      let khrVal = '៛ ' + Math.round(data.grandTotal * exchangeRate).toLocaleString();
+
+      startY += 32;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#000000';
+      ctx.font = `bold 19px ${font}`;
+      ctx.fillText('តម្លៃសរុបចុងក្រោយ (Grand Total):', 50, startY);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#0284c7';
+      ctx.font = `bold 22px ${font}`;
+      ctx.fillText(usdVal, 720, startY);
+
+      startY += 28;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#000000';
+      ctx.font = `bold 18px ${font}`;
+      ctx.fillText('(' + khrVal + ')', 720, startY);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#475569';
+    ctx.font = `bold 15px ${font}`;
+    ctx.fillText('សូមអរគុណសម្រាប់ការបញ្ជាទិញ!', baseWidth / 2, baseHeight - 20);
+
+    resolve(canvas.toBuffer('image/jpeg'));
+  });
+}
+
+async function generateInvoiceImages(data, exchangeRate) {
+  const itemsPerPage = 10;
+  const totalPages = Math.ceil(data.items.length / itemsPerPage);
+  const buffers = [];
+
+  const invoiceNum = Math.floor(100000 + Math.random() * 900000);
+  const now = new Date();
+  const orderDate = now.toLocaleDateString('en-GB');
+  const optionsTime = { timeZone: 'Asia/Phnom_Penh', hour: 'numeric', minute: '2-digit', hour12: true };
+  const timeStr = new Intl.DateTimeFormat('en-GB', optionsTime).format(now).toLowerCase().replace('pm', 'p.m.').replace('am', 'a.m.');
+
+  const fullData = { ...data, invoiceNum, orderDate, timeStr };
+
+  for (let i = 0; i < totalPages; i++) {
+    const pageItems = data.items.slice(i * itemsPerPage, (i + 1) * itemsPerPage);
+    const imgBuffer = await renderSinglePage(fullData, pageItems, i * itemsPerPage, i + 1, totalPages, exchangeRate);
+    buffers.push(imgBuffer);
+  }
+  return buffers;
+}
+
+// --- 15. EXPRESS ROUTES & MESSAGE HANDLERS ---
+app.get('/form', (req, res) => {
+  res.send(`<!DOCTYPE html><html lang="km"><head><meta charset="UTF-8"><title>Invoice Bot</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h2>✅ Bot កំពុងដំណើរការក្នុងទម្រង់ Free!</h2><p>សូមត្រឡប់ទៅកាន់ Telegram Bot វិញ ហើយ Copy & Paste អត្ថបទ Order ចូលទីនេះបានភ្លាមៗ។</p></body></html>`);
+});
+app.get('/', (req, res) => res.send('Invoice Bot Telegram Active!'));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+bot.on('text', async (ctx, next) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith('/')) {
+    return next();
+  }
+
+  const senderId = ctx.from.id ? ctx.from.id.toString() : "";
+  const username = (ctx.from.username || "").toLowerCase();
+  const db = getDatabase();
+
+  const isAdmin = ADMIN_CHAT_ID && senderId === ADMIN_CHAT_ID;
+  const isAllowed = isAdmin || (username && db.allowedUsers[username]);
+
+  if (!isAllowed) {
+    return ctx.reply("❌ អ្នកមិនទាន់ទទួលបានសិទ្ធិប្រើប្រាស់មុខងារបង្កើត Invoice នេះទេ។");
+  }
+
+  if (text.includes('Order') || text.includes('ព័ត៌មានអតិថិជន') || text.includes('ទំនិញ')) {
+    const orderData = parseOrderText(text);
+    if (!orderData || orderData.items.length === 0) {
+      return ctx.reply("❌ មិនអាចអានទម្រង់អត្ថបទបញ្ជាទិញនេះបានទេ!");
+    }
+
+    await ctx.reply("⏳ កំពុងបង្កើតរូបភាពវិក្កយបត្រ...");
+
+    try {
+      const currentRate = db.settings.exchangeRate || 4045;
+      const imageBuffers = await generateInvoiceImages(orderData, currentRate);
+
+      const mediaGroup = imageBuffers.map((buf, index) => {
+        const filePath = path.join(__dirname, `Invoice_${Date.now()}_${index}.jpg`);
+        fs.writeFileSync(filePath, buf);
+        return { type: 'photo', media: { source: filePath }, path: filePath };
+      });
+
+      let captionText = `📄 **វិក្កយបត្របញ្ជាទិញ — ${orderData.shopName}**\n\n`;
+      captionText += `👤 **ឈ្មោះ:** ${orderData.name}\n`;
+      captionText += `📞 **លេខទូរស័ព្ទ:** ${orderData.phone}\n`;
+      captionText += `📍 **អាសយដ្ឋាន:** ${orderData.address}\n`;
+
+      if (orderData.mapUrl) {
+        const cleanCoords = orderData.mapUrl.replace(/\s+/g, '');
+        captionText += `🗺️ **ទីតាំង Map:** ${orderData.mapUrl}\n`;
+        captionText += `🔗 **Google Maps:** https://www.google.com/maps?q=${cleanCoords}\n`;
+      }
+
+      captionText += `\n💰 **តម្លៃសរុប:** $${orderData.grandTotal.toFixed(2)} (៛ ${Math.round(orderData.grandTotal * currentRate).toLocaleString()})`;
+
+      if (mediaGroup.length === 1) {
+        await ctx.replyWithPhoto(mediaGroup[0].media, {
+          caption: captionText,
+          parse_mode: 'Markdown'
+        });
+      } else {
+        mediaGroup[0].caption = captionText;
+        mediaGroup[0].parse_mode = 'Markdown';
+        await ctx.replyWithMediaGroup(mediaGroup.map(m => ({
+          type: 'photo',
+          media: m.media,
+          caption: m.caption,
+          parse_mode: m.parse_mode
+        })));
+      }
+
+      mediaGroup.forEach(m => {
+        if (fs.existsSync(m.path)) fs.unlinkSync(m.path);
+      });
+
+      return;
+    } catch (err) {
+      console.error(err);
+      return ctx.reply("❌ មានបញ្ហាក្នុងការបង្កើតរូបភាព៖ " + err.message);
+    }
+  }
+
+  return next();
+});
+
+// --- 16. START APP ---
+async function startApp() {
+  await setupKhmerFont();
+  await initDB();
+  fetchLiveExchangeRate();
+  setInterval(fetchLiveExchangeRate, 12 * 60 * 60 * 1000);
+  
+  await setupCommandsMenu();
+  
+  // លុប Webhook ចាស់ចោលមុន ដើម្បីការពារ Error 409 Conflict
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+    console.log("Old webhook cleared successfully!");
+  } catch (e) {
+    console.log("Clear webhook error:", e.message);
+  }
+
+  // ដាក់ระบบ Launch ជាមួយ Retry ស្វ័យប្រវត្តិ ការពារការាច់ដំណើរការ
+  const launchBot = () => {
+    bot.launch()
+      .then(() => console.log("Bot, Database, and Delete Feature Active!"))
+      .catch((err) => {
+        console.error("Bot launch error:", err.message);
+        console.log("Retrying bot launch in 5 seconds...");
+        setTimeout(launchBot, 5000);
+      });
+  };
+
+  launchBot();
+}
+
+startApp();
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
