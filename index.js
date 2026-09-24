@@ -29,8 +29,6 @@ from pyrogram.types import ChatJoinRequest, ChatMemberUpdated, Message
 # ------------------------------------------------------------------------------
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "").strip()
 
 def parse_chats(chat_str):
     if not chat_str or chat_str.strip().lower() in ("no", "off", "false", "0"):
@@ -89,6 +87,7 @@ ACCEPT_TF = os.environ.get("Accept_TF", "False").strip().lower() in ("true", "1"
 
 ADD_TO_GROUP = os.environ.get("Add_To_Group", "")
 
+# កំណត់ថា Account ណាខ្លះត្រូវបានអនុញ្ញាតឱ្យ Add ចូល Group (ឧទាហរណ៍: "1,2,3")
 ADD_ACCOUNTS_STR = os.environ.get("ADD_ACCOUNTS", "").strip()
 allowed_add_accounts = []
 if ADD_ACCOUNTS_STR:
@@ -97,6 +96,7 @@ if ADD_ACCOUNTS_STR:
         if x.isdigit():
             allowed_add_accounts.append(int(x))
 
+# កំណត់ Limit ដាច់ដោយឡែកសម្រាប់ Account នីមួយៗ (ឧទាហរណ៍: "1:40,2:40,3:10")
 CUSTOM_LIMITS_STR = os.environ.get("CUSTOM_LIMITS", "").strip()
 account_custom_limits = {}
 if CUSTOM_LIMITS_STR:
@@ -134,6 +134,9 @@ SOURCE_MESSAGES_FILE = os.path.join(DATA_DIR, "source_messages.json")
 
 file_lock = asyncio.Lock()
 
+# ------------------------------------------------------------------------------
+# SAFE ATOMIC FILE HANDLING (CRASH-PROOF)
+# ------------------------------------------------------------------------------
 def safe_load_json(filename, default_val):
     if os.path.exists(filename):
         try:
@@ -184,7 +187,7 @@ parsed_sources = parse_chats(SOURCE_CHAT)
 source_chat_parsed = parsed_sources[0] if parsed_sources else None
 
 # ------------------------------------------------------------------------------
-# INITIALIZE CLIENTS & BOT
+# INITIALIZE CLIENTS
 # ------------------------------------------------------------------------------
 clients = []
 clients_configs = []
@@ -202,24 +205,6 @@ for idx, acc_info in enumerate(accounts_config, start=1):
     clients_configs.append(acc_info)
 
 primary_client = clients[0] if clients else None
-
-bot_client = None
-if BOT_TOKEN:
-    bot_client = Client(
-        "notification_bot_session",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        bot_token=BOT_TOKEN
-    )
-
-async def send_admin_alert(text: str):
-    if not bot_client or not ALERT_CHAT_ID:
-        return
-    try:
-        chat_target = int(ALERT_CHAT_ID) if ALERT_CHAT_ID.startswith("-") or ALERT_CHAT_ID.isdigit() else ALERT_CHAT_ID
-        await bot_client.send_message(chat_target, text)
-    except Exception as e:
-        print(f"⚠️ Bot មិនអាចផ្ញើ Alert ទៅកាន់ Group បានទេ: {e}")
 
 
 # ------------------------------------------------------------------------------
@@ -251,9 +236,10 @@ if primary_client:
         try:
             await client.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
             await asyncio.sleep(random.uniform(3, 5))
-        except Exception as ex:
-            await send_admin_alert(f"🚨 **Error in Auto Accept Request:**\n`{ex}`")
+        except Exception:
+            pass
 
+    # Real-time listener ដើម្បីចាប់យកសមាជិកថ្មី Join ឬផ្ញើសារក្នុង Group គោលដៅ
     @primary_client.on_message()
     async def real_time_join_listener(client: Client, message: Message):
         try:
@@ -262,9 +248,11 @@ if primary_client:
                 return
             
             users_to_add = []
+            
             if message.new_chat_members:
                 for u in message.new_chat_members:
                     users_to_add.append(u)
+            
             if message.from_user:
                 users_to_add.append(message.from_user)
 
@@ -273,7 +261,7 @@ if primary_client:
                     continue
                 
                 async with file_lock:
-                    if target_welcome_groups:
+                    if add_to_groups:
                         add_queue = safe_load_json(ADD_QUEUE_FILE, [])
                         if not any(u["id"] == user.id for u in add_queue):
                             add_queue.append(
@@ -281,10 +269,11 @@ if primary_client:
                                     "id": user.id,
                                     "username": user.username,
                                     "first_name": user.first_name or "",
-                                    "source_group": str(chat.title or chat.id)
                                 }
                             )
                             safe_save_json(ADD_QUEUE_FILE, add_queue)
+                            t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+                            print(f"[{t_now}] 🎯 ចាប់បានសមាជិកថ្មី Real-time: {user.first_name} (ID: {user.id}) -> បញ្ចូល Queue រួចរាល់!")
         except Exception as ex:
             pass
 
@@ -321,7 +310,7 @@ if primary_client:
                             )
                             safe_save_json(QUEUE_FILE, current_queue)
 
-                        if target_welcome_groups:
+                        if add_to_groups:
                             add_queue = safe_load_json(ADD_QUEUE_FILE, [])
                             if not any(u["id"] == user.id for u in add_queue):
                                 add_queue.append(
@@ -329,14 +318,13 @@ if primary_client:
                                         "id": user.id,
                                         "username": user.username,
                                         "first_name": user.first_name or "",
-                                        "source_group": str(chat.title or chat.id)
                                     }
                                 )
                                 safe_save_json(ADD_QUEUE_FILE, add_queue)
 
 
 # ------------------------------------------------------------------------------
-# WORKER FUNCTIONS
+# WORKER FUNCTIONS (BROADCASTER & OTHERS)
 # ------------------------------------------------------------------------------
 
 async def source_chat_poller_worker(client: Client):
@@ -362,10 +350,14 @@ async def source_chat_poller_worker(client: Client):
                         if m["id"] not in existing_ids:
                             msgs.append(m)
                             new_added = True
+                            total_count = len(msgs)
+                            t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+                            print(f"[{t_now}] 📥 បានចាប់យកសារថ្មីភ្លាមៗ (Polling) ពី Source Chat (Message ID: {m['id']}) | 📊 សរុបសារក្នុង Source ឥឡូវនេះ: {total_count} សារ")
+                    
                     if new_added:
                         safe_save_json(SOURCE_MESSAGES_FILE, msgs)
             except Exception as ex:
-                await send_admin_alert(f"🚨 **Error in Source Poller:**\n`{ex}`")
+                pass
         await asyncio.sleep(5)
 
 
@@ -379,10 +371,19 @@ async def scrape_members_worker(client: Client):
 
             for g in target_welcome_groups:
                 try:
-                    async for message in client.get_chat_history(g, limit=300):
+                    t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+                    print(f"\n[{t_now}] 🔍 កំពុងអានប្រវត្តិសារពី Group: {g} ដើម្បីទាញយក ID សមាជិក...")
+
+                    scraped_count = 0
+                    total_scanned_msgs = 0
+                    
+                    async for message in client.get_chat_history(g, limit=500):
+                        total_scanned_msgs += 1
                         users_to_add_list = []
+                        
                         if message.from_user:
                             users_to_add_list.append(message.from_user)
+                            
                         if message.new_chat_members:
                             for u in message.new_chat_members:
                                 users_to_add_list.append(u)
@@ -392,57 +393,34 @@ async def scrape_members_worker(client: Client):
                                 continue
 
                             async with file_lock:
-                                add_queue = safe_load_json(ADD_QUEUE_FILE, [])
-                                if not any(u["id"] == user.id for u in add_queue):
-                                    add_queue.append(
-                                        {
-                                            "id": user.id,
-                                            "username": user.username,
-                                            "first_name": user.first_name or "",
-                                            "source_group": str(g)
-                                        }
-                                    )
-                                    safe_save_json(ADD_QUEUE_FILE, add_queue)
+                                if add_to_groups:
+                                    add_queue = safe_load_json(ADD_QUEUE_FILE, [])
+                                    if not any(u["id"] == user.id for u in add_queue):
+                                        add_queue.append(
+                                            {
+                                                "id": user.id,
+                                                "username": user.username,
+                                                "first_name": user.first_name or "",
+                                            }
+                                        )
+                                        safe_save_json(ADD_QUEUE_FILE, add_queue)
+                                        scraped_count += 1
+
                         await asyncio.sleep(0.01)
+
+                    t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+                    print(f"[{t_now}] ✅ ស្កេនបាន {total_scanned_msgs} សារពី Group {g} | បន្ថែម ID ថ្មីចូល Queue: {scraped_count} នាក់\n")
 
                 except FloodWait as e:
                     await asyncio.sleep(e.value + 5)
                 except Exception as ex:
-                    await send_admin_alert(f"🚨 **Error Scraping Group ({g}):**\n`{ex}`")
+                    print(f"⚠️ មិនអាចអានប្រវត្តិសារពី Group ({g}): {ex}")
 
                 await asyncio.sleep(60)
+
             await asyncio.sleep(3600)
-        except Exception as ex:
-            await send_admin_alert(f"🚨 **Error in scrape_members_worker:**\n`{ex}`")
+        except Exception:
             await asyncio.sleep(30)
-
-
-async def queue_status_reporter_task():
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            async with file_lock:
-                queue = safe_load_json(ADD_QUEUE_FILE, [])
-            
-            total_queue = len(queue)
-            group_counts = {}
-            for item in queue:
-                g_name = item.get("source_group", "Unknown Group")
-                group_counts[g_name] = group_counts.get(g_name, 0) + 1
-
-            report_msg = "📊 **QUEUE STATUS REPORT** 📊\n\n"
-            report_msg += f"📌 **Total Queue សរុប:** `{total_queue}` នាក់\n\n"
-            report_msg += "📂 **ចំនួន Queue តាម Group នីមួយៗ:**\n"
-            
-            if group_counts:
-                for g_name, count in group_counts.items():
-                    report_msg += f"- `{g_name}`: `{count}` នាក់\n"
-            else:
-                report_msg += "- គ្មានទិន្នន័យ trong Queue ទេ។\n"
-
-            await send_admin_alert(report_msg)
-        except Exception as ex:
-            print(f"Error sending queue report: {ex}")
 
 
 async def welcome_queue_worker(client: Client):
@@ -457,18 +435,33 @@ async def welcome_queue_worker(client: Client):
 
             user_data = current_queue[0]
             member_id = user_data["id"]
+            first_name = user_data.get("first_name", "")
 
             try:
-                await client.get_users(member_id)
+                try:
+                    await client.get_users(member_id)
+                except Exception:
+                    async with file_lock:
+                        cq = safe_load_json(QUEUE_FILE, [])
+                        if cq:
+                            cq.pop(0)
+                            safe_save_json(QUEUE_FILE, cq)
+                    continue
+
                 await asyncio.sleep(2)
                 chosen_welcome_msg = random.choice(WELCOME_MESSAGES_LIST)
-                sent_msg = await client.send_message(chat_id=member_id, text=chosen_welcome_msg)
+                sent_msg = await client.send_message(
+                    chat_id=member_id, text=chosen_welcome_msg
+                )
 
                 async with file_lock:
                     cq = safe_load_json(QUEUE_FILE, [])
                     if cq:
                         cq.pop(0)
                         safe_save_json(QUEUE_FILE, cq)
+
+                t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+                print(f"[{t_now}] ✅ បានស្វាគមន៍: {first_name}")
 
                 await asyncio.sleep(60)
                 try:
@@ -503,8 +496,8 @@ async def add_member_manager_task(allowed_clients_tuples):
                 continue
 
             today_str = datetime.now(ICT).strftime("%Y-%m-%d")
+
             user_data = None
-            
             async with file_lock:
                 queue = safe_load_json(ADD_QUEUE_FILE, [])
                 if queue:
@@ -538,6 +531,7 @@ async def add_member_manager_task(allowed_clients_tuples):
                         safe_save_json(ADD_DAILY_STATE_FILE, states)
 
                 current_acc_limit = account_custom_limits.get(acc_num, 30)
+
                 if acc_state["count"] >= current_acc_limit:
                     continue
 
@@ -573,7 +567,10 @@ async def add_member_manager_task(allowed_clients_tuples):
                     if "PEER_FLOOD" in ex_str or "400 PEER_FLOOD" in ex_str or isinstance(ex, PeerFlood):
                         blocked_accounts[acc_num] = datetime.now(ICT) + timedelta(seconds=3600)
                         continue
-                    elif isinstance(ex, (UserPrivacyRestricted, UserRestricted, UserNotMutualContact, UserAlreadyParticipant)):
+                    elif isinstance(ex, (UserPrivacyRestricted, UserRestricted, UserNotMutualContact)):
+                        skip_user_permanently = True
+                        break
+                    elif isinstance(ex, UserAlreadyParticipant):
                         skip_user_permanently = True
                         break
                     else:
@@ -589,8 +586,7 @@ async def add_member_manager_task(allowed_clients_tuples):
                 delay = random.randint(250, 400)
                 await asyncio.sleep(delay)
 
-        except Exception as ex:
-            await send_admin_alert(f"🚨 **Error in Add Member Manager:**\n`{ex}`")
+        except Exception as e:
             await asyncio.sleep(10)
 
 
@@ -607,39 +603,80 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
         saved_target_index = acc_st.get("target_index", 0)
         wake_up_iso = acc_st.get("wake_up_time", None)
 
+    # ពិនិត្យមើលថាតើនៅសល់ម៉ោង Sleep ដែរឬទេ ពេលងើបមកវិញ (ក្រោយពេល Restart/Redeploy)
     if wake_up_iso:
         try:
             wake_up_dt = datetime.fromisoformat(wake_up_iso)
             now_dt = datetime.now(ICT)
             if now_dt < wake_up_dt:
-                await asyncio.sleep((wake_up_dt - now_dt).total_seconds())
+                remaining_seconds = (wake_up_dt - now_dt).total_seconds()
+                sleep_hours = remaining_seconds / 3600
+                t_now = now_dt.strftime('%I:%M:%S %p')
+                print(f"[{t_now}] 💤 Acc #{acc_index} បាន Restart ប៉ុន្តែនៅសល់ម៉ោង Sleep! កំពុងសម្រាកបន្តរយៈពេល {sleep_hours:.1f}ម៉ោង (ងើបម៉ោង {wake_up_dt.strftime('%I:%M:%S %p')})...")
+                await asyncio.sleep(remaining_seconds)
         except Exception:
             pass
 
     if not targets:
+        print(f"⚠️ Acc #{acc_index} គ្មាន TARGET_CHAT ត្រូវបានកំណត់ទេ!")
         return
+
+    if source_chat_parsed:
+        try:
+            initial_msgs = []
+            async for message in client.get_chat_history(source_chat_parsed, limit=50):
+                if not message.service and (message.text or message.caption or message.media):
+                    initial_msgs.append({
+                        "id": message.id,
+                        "chat_id": message.chat.id,
+                        "text": message.text or message.caption or "Media/Post",
+                    })
+            initial_msgs.reverse()
+            if initial_msgs:
+                async with file_lock:
+                    existing_msgs = safe_load_json(SOURCE_MESSAGES_FILE, [])
+                    if not existing_msgs:
+                        safe_save_json(SOURCE_MESSAGES_FILE, initial_msgs)
+                        print(f"📁 [Acc #{acc_index}] ទាញយកប្រវត្តិសារដើមពី Source បានចំនួន: {len(initial_msgs)} សារ")
+        except Exception as ex:
+            print(f"⚠️ Acc #{acc_index} មិនអាចទាញប្រវត្តិសារដើមពី Source: {ex}")
 
     while True:
         if not source_chat_parsed:
+            t_now = datetime.now(ICT).strftime("%I:%M:%S %p")
+            print(f"[{t_now}] ⚠️ Acc #{acc_index}: មិនទាន់បានកំណត់ SOURCE_CHAT ក្នុង Variables ឡើយ! រង់ចាំ 30 នាទី...")
             await asyncio.sleep(30)
             continue
 
         try:
+            t_now = datetime.now(ICT).strftime("%Y-%m-%d %I:%M:%S %p")
+
             async with file_lock:
                 messages_to_send = safe_load_json(SOURCE_MESSAGES_FILE, [])
 
             if not messages_to_send:
+                print(f"⚠️ Acc #{acc_index}: រកមិនឃើញសារក្នុង Source ទេ! រង់ចាំ ១ នាទី...")
                 await asyncio.sleep(60)
                 continue
 
             msg_counter = msg_counter % len(messages_to_send)
             target_msg_data = messages_to_send[msg_counter]
+            text_preview = (target_msg_data.get("text") or "Media/Post")[:20]
             total_targets = len(targets)
+
+            if not targets:
+                print(f"⚠️ Acc #{acc_index}: បញ្ជី Targets អស់ហើយ!")
+                await asyncio.sleep(300)
+                continue
 
             start_t_index = saved_target_index + 1
             if start_t_index > total_targets:
                 start_t_index = 1
                 saved_target_index = 0
+
+            print(f"\n==================================================")
+            print(f"🚀 [{t_now}] Acc #{acc_index} ចាប់ផ្តើមផ្ញើសារទី #{msg_counter + 1} លើសរុប {len(messages_to_send)} សារ (ID: {target_msg_data['id']}): {text_preview} ទៅកាន់ {targets} (ចាប់ផ្តើមពី Group #{start_t_index}) ...")
+            print(f"==================================================")
 
             t_index = start_t_index
             skip_current_message = False
@@ -656,6 +693,9 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
                             message_id=target_msg_data["id"],
                         )
                         success = True
+                        t_sent = datetime.now(ICT).strftime("%I:%M:%S %p")
+                        print(f"✅ Acc #{acc_index} [{t_index}/{len(targets)}] បានផ្ញើទៅ {target} (ម៉ោង {t_sent})")
+
                         async with file_lock:
                             curr_st = safe_load_json(BROADCASTER_STATE_FILE, {})
                             curr_st[f"acc_{acc_index}"] = {
@@ -665,16 +705,40 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
                             }
                             safe_save_json(BROADCASTER_STATE_FILE, curr_st)
 
-                        await asyncio.sleep(random.randint(120, 150))
+                        target_delay = random.randint(120, 150)
+                        print(f"⏳ Acc #{acc_index} រង់ចាំ {target_delay} វិនាទី...")
+                        await asyncio.sleep(target_delay)
 
                     except FloodWait as e:
                         attempts += 1
+                        print(f"🛑 Acc #{acc_index} ជាប់ FloodWait: សម្រាក {e.value} វិនាទី...")
                         await asyncio.sleep(e.value + 2)
+
                     except MessageIdInvalid:
+                        print(f"🚫 Acc #{acc_index}: សារ ID {target_msg_data['id']} ត្រូវគេលុប ឬមិនត្រឹមត្រូវ! កំពុងលុបចេញពីបញ្ជីនិងរំលង...")
+                        async with file_lock:
+                            msgs = safe_load_json(SOURCE_MESSAGES_FILE, [])
+                            msgs = [m for m in msgs if m["id"] != target_msg_data["id"]]
+                            safe_save_json(SOURCE_MESSAGES_FILE, msgs)
                         skip_current_message = True
                         success = True
                         break
+
+                    except (ChatWriteForbidden, UserBannedInChannel, ChatAdminRequired, ChannelPrivate, ChannelInvalid, PeerIdInvalid, UsernameInvalid, UsernameNotOccupied) as ex:
+                        print(f"🚫 Acc #{acc_index}: ត្រូវគេ Restricted/Banned ឬ Group ត្រូវគេលុប/រកមិនឃើញ ({target})! កំពុង Auto Leave និងលុបចេញពីបញ្ជី...")
+                        try:
+                            await client.leave_chat(target)
+                        except Exception:
+                            pass
+                        
+                        if target in targets:
+                            targets.remove(target)
+                        
+                        success = True
+                        break
+
                     except Exception as ex:
+                        print(f"⚠️ Acc #{acc_index} មិនអាចផ្ញើទៅ {target}: {ex}")
                         break
 
                 if skip_current_message:
@@ -682,7 +746,9 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
 
                 if target in targets and success:
                     if t_index % 3 == 0 and t_index < len(targets):
-                        await asyncio.sleep(random.randint(130, 150))
+                        pause_time = random.randint(130, 150)
+                        print(f"⏸️ Acc #{acc_index} គ្រប់ ៣ Groups ហើយ! សម្រាកបន្ថែម {pause_time} វិនាទី...")
+                        await asyncio.sleep(pause_time)
                     t_index += 1
 
             if not skip_current_message:
@@ -698,11 +764,13 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
                 }
                 safe_save_json(BROADCASTER_STATE_FILE, curr_st)
 
-        except Exception as ex:
-            await send_admin_alert(f"🚨 **Error in Broadcaster (Acc #{acc_index}):**\n`{ex}`")
+        except Exception as e:
+            print(f"⚠️ មានបញ្ហាលើ Acc #{acc_index}: {e}")
             await asyncio.sleep(10)
 
         wake_up_time = datetime.now(ICT) + timedelta(seconds=SLEEP_TIME)
+        sleep_hours = SLEEP_TIME / 3600
+        
         async with file_lock:
             curr_st = safe_load_json(BROADCASTER_STATE_FILE, {})
             curr_st[f"acc_{acc_index}"] = {
@@ -712,6 +780,7 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
             }
             safe_save_json(BROADCASTER_STATE_FILE, curr_st)
 
+        print(f"💤 Acc #{acc_index} ចូល Sleep រយៈពេល {sleep_hours:.1f}ម៉ោង (ម៉ោងផ្ញើសារបន្ទាប់ {wake_up_time.strftime('%I:%M:%S %p')})\n")
         await asyncio.sleep(SLEEP_TIME)
 
 
@@ -719,59 +788,30 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
 # MAIN ENTRYPOINT
 # ------------------------------------------------------------------------------
 async def main():
-    if bot_client:
-        try:
-            await bot_client.start()
-            me_bot = await bot_client.get_me()
-            print(f"🤖 Notification Bot Connected: @{me_bot.username}")
-        except Exception as e:
-            print(f"❌ បរាជ័យក្នុងការ Login Bot: {e}")
-
     if not clients:
         print("❌ សូមបញ្ចូល SESSION_STRING ឬ SESSION_STRING_{i} ក្នុង Environment Variables!")
         return
 
-    # ប្រមូលគ្រប់ Chat IDs / Usernames ទាំងអស់មក Pre-cache ទុកមុន
-    chats_to_cache = []
-    if target_welcome_groups:
-        chats_to_cache.extend(target_welcome_groups)
-    if accept_request_groups:
-        chats_to_cache.extend(accept_request_groups)
-    if add_to_groups:
-        chats_to_cache.extend(add_to_groups)
-    if source_chat_parsed:
-        chats_to_cache.append(source_chat_parsed)
-    for cfg in accounts_config:
-        if cfg.get('targets'):
-            chats_to_cache.extend(cfg['targets'])
-    chats_to_cache = list(set(chats_to_cache))
-
     valid_clients = []
-    for idx, (cli, cfg) in enumerate(clients, start=1):
+    for idx, (cli, cfg) in enumerate(zip(clients, clients_configs), start=1):
         try:
             await cli.start()
             me = await cli.get_me()
             valid_clients.append((cli, cfg))
-            print(f"✅ Client #{cfg['index']} Logged in: {me.first_name}")
+            print(f"✅ Client #{cfg['index']} Logged in: {me.first_name} (@{me.username or 'No Username'}) -> Target: {cfg['targets']}")
 
-            # 🛠️ បង្ខំឱ្យ Client Resolve និង Cache Peer ID របស់ Groups ទាំងអស់ទុកមុន
-            for chat in chats_to_cache:
+            if idx == 1:
                 try:
-                    await cli.get_chat(chat)
+                    async for dialog in cli.get_dialogs(limit=200):
+                        pass
                 except Exception:
                     pass
-
-            try:
-                async for dialog in cli.get_dialogs(limit=200):
-                    pass
-            except Exception as e:
-                print(f"⚠️ Warning loading dialogs for Client #{cfg['index']}: {e}")
 
         except Exception as e:
             print(f"❌ បរាជ័យក្នុងការ Login Client #{cfg['index']}: {e}")
 
     if not valid_clients:
-        print("❌ គ្មាន Client ណាមួយអាច Login ได้ឡើយ! កម្មវិធីត្រូវបានបិទ។")
+        print("❌ គ្មាន Client ណាមួយអាច Login បានឡើយ! កម្មវិធីត្រូវបានបិទ។")
         return
 
     t_now = datetime.now(ICT).strftime("%Y-%m-%d %I:%M:%S %p")
@@ -782,7 +822,6 @@ async def main():
         asyncio.create_task(source_chat_poller_worker(first_cli))
         asyncio.create_task(scrape_members_worker(first_cli))
         asyncio.create_task(welcome_queue_worker(first_cli))
-        asyncio.create_task(queue_status_reporter_task())
 
         adder_clients_tuples = []
         for cli, cfg in valid_clients:
@@ -791,7 +830,10 @@ async def main():
                 adder_clients_tuples.append((cli, cfg))
 
         if adder_clients_tuples:
+            print(f"👥 Accounts ដែលត្រូវបានកំណត់ឱ្យទាញសមាជិក (Add Members): {[cfg['index'] for _, cfg in adder_clients_tuples]}")
             asyncio.create_task(add_member_manager_task(adder_clients_tuples))
+        else:
+            print("⚠️ គ្មាន Account ណាត្រូវបានកំណត់ឱ្យទាញសមាជិក (Add Members) ទេ។")
 
         for cli, cfg in valid_clients:
             asyncio.create_task(single_message_broadcaster_task(cli, cfg["index"], cfg["targets"]))
