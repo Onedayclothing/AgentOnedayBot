@@ -731,6 +731,21 @@ async def main():
         print("❌ សូមបញ្ចូល SESSION_STRING ឬ SESSION_STRING_{i} ក្នុង Environment Variables!")
         return
 
+    # ប្រមូលគ្រប់ Chat IDs / Usernames ទាំងអស់មក Pre-cache ទុកមុន
+    chats_to_cache = []
+    if target_welcome_groups:
+        chats_to_cache.extend(target_welcome_groups)
+    if accept_request_groups:
+        chats_to_cache.extend(accept_request_groups)
+    if add_to_groups:
+        chats_to_cache.extend(add_to_groups)
+    if source_chat_parsed:
+        chats_to_cache.append(source_chat_parsed)
+    for cfg in accounts_config:
+        if cfg.get('targets'):
+            chats_to_cache.extend(cfg['targets'])
+    chats_to_cache = list(set(chats_to_cache))
+
     valid_clients = []
     for idx, (cli, cfg) in enumerate(clients, start=1):
         try:
@@ -739,7 +754,13 @@ async def main():
             valid_clients.append((cli, cfg))
             print(f"✅ Client #{cfg['index']} Logged in: {me.first_name}")
 
-            # 🛠️ កែប្រែត្រង់ចំណុចនេះ៖ ឱ្យ Client ទាំងអស់ទាញ Dialogs ដើម្បី Cache Peer ID ទុកជាមុន
+            # 🛠️ បង្ខំឱ្យ Client Resolve និង Cache Peer ID របស់ Groups ទាំងអស់ទុកមុន
+            for chat in chats_to_cache:
+                try:
+                    await cli.get_chat(chat)
+                except Exception:
+                    pass
+
             try:
                 async for dialog in cli.get_dialogs(limit=200):
                     pass
@@ -750,7 +771,7 @@ async def main():
             print(f"❌ បរាជ័យក្នុងការ Login Client #{cfg['index']}: {e}")
 
     if not valid_clients:
-        print("❌ គ្មាន Client ណាមួយអាច Login បានឡើយ! កម្មវិធីត្រូវបានបិទ។")
+        print("❌ គ្មាន Client ណាមួយអាច Login ได้ឡើយ! កម្មវិធីត្រូវបានបិទ។")
         return
 
     t_now = datetime.now(ICT).strftime("%Y-%m-%d %I:%M:%S %p")
