@@ -239,7 +239,7 @@ if primary_client:
         except Exception:
             pass
 
-    # Real-time listener ដើម្បីចាប់យកសមាជិកថ្មី Join ឬផ្ញើសារក្នុង Group គោលដៅ
+    # Real-time listener เพื่อចាប់យកសមាជិកថ្មី Join ឬផ្ញើសារក្នុង Group គោលដៅ (ផ្អែកលើ target_welcome_groups)
     @primary_client.on_message()
     async def real_time_join_listener(client: Client, message: Message):
         try:
@@ -261,7 +261,7 @@ if primary_client:
                     continue
                 
                 async with file_lock:
-                    if add_to_groups:
+                    if target_welcome_groups:  # ឱ្យតែមាន Record_Join គឺកត់ចូល Queue ភ្លាម
                         add_queue = safe_load_json(ADD_QUEUE_FILE, [])
                         if not any(u["id"] == user.id for u in add_queue):
                             add_queue.append(
@@ -310,7 +310,7 @@ if primary_client:
                             )
                             safe_save_json(QUEUE_FILE, current_queue)
 
-                        if add_to_groups:
+                        if target_welcome_groups:  # ឱ្យតែមាន Record_Join គឺកត់ចូល Queue ភ្លាម
                             add_queue = safe_load_json(ADD_QUEUE_FILE, [])
                             if not any(u["id"] == user.id for u in add_queue):
                                 add_queue.append(
@@ -393,7 +393,7 @@ async def scrape_members_worker(client: Client):
                                 continue
 
                             async with file_lock:
-                                if add_to_groups:
+                                if target_welcome_groups:
                                     add_queue = safe_load_json(ADD_QUEUE_FILE, [])
                                     if not any(u["id"] == user.id for u in add_queue):
                                         add_queue.append(
@@ -603,7 +603,6 @@ async def single_message_broadcaster_task(client: Client, acc_index: int, target
         saved_target_index = acc_st.get("target_index", 0)
         wake_up_iso = acc_st.get("wake_up_time", None)
 
-    # ពិនិត្យមើលថាតើនៅសល់ម៉ោង Sleep ដែរឬទេ ពេលងើបមកវិញ (ក្រោយពេល Restart/Redeploy)
     if wake_up_iso:
         try:
             wake_up_dt = datetime.fromisoformat(wake_up_iso)
